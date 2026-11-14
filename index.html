@@ -12,7 +12,7 @@
 <style>
 :root{
   --bg:#000;--s1:#0d0d0d;--s2:#151515;--s3:#1d1d1d;--line:#262626;--line2:#333;
-  --tx:#ededed;--tx2:#a3a3a3;--tx3:#6b6b6b;--ac:#3ddc84;--ac2:#1f7a49;--warn:#f5b041;--err:#ff6b6b;
+  --tx:#ededed;--tx2:#a3a3a3;--tx3:#6b6b6b;--ac:#3b9eff;--ac2:#1e3a8a;--warn:#f5b041;--err:#ff6b6b;
   --mono:'JetBrains Mono',ui-monospace,monospace;
 }
 *{box-sizing:border-box}
@@ -23,7 +23,7 @@ h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
 h1 span{color:var(--ac)}
 header p{margin:0;color:var(--tx3);font-size:13px}
 .drop{display:block;border:1.5px dashed var(--line2);border-radius:14px;background:var(--s1);padding:42px 20px;text-align:center;cursor:pointer;transition:.15s}
-.drop:hover,.drop.over{border-color:var(--ac);background:#06140c}
+.drop:hover,.drop.over{border-color:var(--ac);background:#060d1f}
 .drop b{display:block;font-size:16px;font-weight:600;margin-bottom:4px}
 .drop small{color:var(--tx3)}
 .drop input{display:none}
@@ -40,7 +40,7 @@ input[type=range]{accent-color:var(--ac);width:130px}
 .sp{flex:1}
 .btn{border:1px solid var(--line2);background:var(--s2);color:var(--tx);padding:9px 15px;border-radius:9px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:.12s;white-space:nowrap}
 .btn:hover{border-color:var(--tx3)}
-.btn.pri{background:var(--ac);border-color:var(--ac);color:#03140a}
+.btn.pri{background:var(--ac);border-color:var(--ac);color:#fff}
 .btn.pri:hover{filter:brightness(1.1)}
 .btn:disabled{opacity:.4;cursor:default}
 .info{margin-top:14px;font-size:13px;color:var(--tx2);min-height:20px}
@@ -57,8 +57,8 @@ th,td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);pad
 thead th{position:sticky;top:0;background:var(--s3);color:var(--tx3);font-family:var(--mono);font-size:11px;font-weight:500;z-index:2}
 tbody th{position:sticky;left:0;background:var(--s2);color:var(--tx3);font-family:var(--mono);font-size:11px;font-weight:400;text-align:right;z-index:1}
 td{color:var(--tx);outline:none;min-width:40px}
-td:focus{background:#0b2416;box-shadow:inset 0 0 0 1px var(--ac)}
-td.num{text-align:right;font-family:var(--mono);color:#cfe9ff}
+td:focus{background:#0b1a3a;box-shadow:inset 0 0 0 1px var(--ac)}
+td.num{text-align:right;font-family:var(--mono);color:#e8eef8}
 td.neg{color:#ff9a9a}
 td.dt{font-family:var(--mono);color:#ffe2a8}
 tr:hover td{background:#111}
@@ -124,6 +124,7 @@ tr:hover td{background:#111}
       <input type="range" id="rowTol" min="2" max="12" value="5">
     </div>
     <label class="chk" title="Gộp các dòng chữ bị xuống dòng (diễn giải, loại GD) vào dòng có số tiền"><input type="checkbox" id="mergeRec" checked> Gộp giao dịch nhiều dòng</label>
+    <label class="chk" title="Chỉ giữ tiêu đề bảng ở trang đầu, bỏ dòng số trang"><input type="checkbox" id="dropHead" checked> Bỏ tiêu đề lặp ở trang sau</label>
     <label class="chk"><input type="checkbox" id="dropEmpty" checked> Bỏ cột/dòng trống</label>
     <div class="sp"></div>
     <button class="btn" id="copyBtn" title="Sao chép bảng đang xem để dán vào Excel">Sao chép bảng</button>
@@ -134,7 +135,7 @@ tr:hover td{background:#111}
   <div class="grid" id="grid" style="display:none"></div>
   <div class="hint" id="hint" style="display:none">
     Bấm vào ô để sửa trực tiếp trước khi xuất. Kéo thanh <b>Tách cột</b> sang phải nếu cột bị dính vào nhau, sang trái nếu một cột bị tách đôi (chỉnh lại sẽ mất phần đã sửa tay).
-    <span class="legend" style="display:inline-flex;margin-left:12px"><span><i style="background:#cfe9ff"></i>Số</span><span><i style="background:#ffe2a8"></i>Ngày dd/mm/yyyy</span><span><i style="background:#ededed"></i>Chữ</span></span>
+    <span class="legend" style="display:inline-flex;margin-left:12px"><span><i style="background:#e8eef8"></i>Số</span><span><i style="background:#ffe2a8"></i>Ngày dd/mm/yyyy</span><span><i style="background:#ededed"></i>Chữ</span></span>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -290,35 +291,81 @@ function colStart(cols, x){ let k=0; for (let i=0;i<cols.length;i++) if (cols[i]
 
 // gộp các dòng chữ của cùng 1 giao dịch (ô xuống dòng) vào dòng có số tiền
 function joinTxt(a, b){ if (!a) return b; if (!b) return a; return /[-\/]$/.test(a) ? a + b : a + ' ' + b; }
+const PAGENO_RE = /^[-–—\s]*(page|trang)?\s*\d+\s*(\/|of|trên)\s*\d+[-–—\s]*$/i;
+const isPageNo = r => PAGENO_RE.test(r.filter(Boolean).join(' ').trim());
 function mergeRecords(lines, rows){
-  const n = lines.length;
+  const n = lines.length; if (!n) return rows;
+  const nc = rows[0].length;
   const isAnchor = lines.map(L => L.cells.filter(c => typeOf(c.s)).length >= 2);
+  const barrier = lines.map((L,i) => !isAnchor[i] && (L.cells.length >= 3 || isPageNo(rows[i])));
   const aIdx = []; isAnchor.forEach((v,i)=>{ if (v) aIdx.push(i); });
-  if (aIdx.length < 2) return rows;
-  const gaps = []; for (let k=1;k<aIdx.length;k++) gaps.push(Math.abs(lines[aIdx[k-1]].y - lines[aIdx[k]].y));
-  gaps.sort((a,b)=>a-b);
-  const maxD = gaps[Math.floor(gaps.length/2)] * 0.75;
-  const grp = new Array(n);
-  for (let i=0;i<n;i++){
-    grp[i] = i;
-    if (isAnchor[i]) continue;
-    const L = lines[i];
-    if (L.cells.length >= 3) continue;                       // dòng tiêu đề cột → giữ riêng
-    let best=-1, bd=Infinity;
-    for (const a of aIdx){ const d = Math.abs(lines[a].y - L.y); if (d < bd){ bd=d; best=a; } }
-    if (best >= 0 && bd <= maxD) grp[i] = best;
+  if (!aIdx.length) return rows;
+  const hs = lines.map(L=>L.h).sort((a,b)=>a-b), h = hs[Math.floor(hs.length/2)] || 8;
+  const step = h * 2.4;
+  const near = (i,k) => Math.abs(lines[i].y - lines[k].y) <= step;
+  // kiểu căn chữ: có dòng chữ ngay trên giao dịch đầu tiên → căn giữa theo chiều dọc
+  let centered = false;
+  { const a0 = aIdx[0]; let i = a0-1;
+    while (i >= 0 && !barrier[i] && !isAnchor[i] && near(i,i+1)){ if (rows[i].some(Boolean)) { centered = true; break; } i--; } }
+  const owner = rows.map(r => r.map(()=>-1));
+  aIdx.forEach(a => owner[a].fill(a));
+  // chuỗi dòng liền nhau đi xuống từ i (dừng ở anchor/barrier/khoảng hở)
+  const chainDown = (from, to) => { const out=[]; for (let i=from+1;i<to;i++){ if (barrier[i]||isAnchor[i]||!near(i-1,i)) break; out.push(i);} return out; };
+  const chainUp = (from, to) => { const out=[]; for (let i=from-1;i>to;i--){ if (barrier[i]||isAnchor[i]||!near(i,i+1)) break; out.unshift(i);} return out; };
+  for (let j=0;j<nc;j++){
+    let upper = 0;
+    for (let k=0;k<=aIdx.length;k++){
+      const P = k ? aIdx[k-1] : -1, A = k < aIdx.length ? aIdx[k] : n;
+      let hasBarrier = false; for (let i=P+1;i<A;i++) if (barrier[i]) { hasBarrier = true; break; }
+      const withTxt = arr => arr.filter(i => rows[i][j]);
+      if (P >= 0 && A < n && !hasBarrier){
+        const G = withTxt(chainDown(P, A).length === A-P-1 ? Array.from({length:A-P-1},(_,t)=>P+1+t) : []);
+        if (!G.length && A-P-1 > 0){ // có khoảng hở: phần liền P thuộc P, phần liền A thuộc A
+          const d = withTxt(chainDown(P, A)), u = withTxt(chainUp(A, P));
+          if (centered){ d.slice(0, upper).forEach(i=>owner[i][j]=P); }
+          else d.forEach(i=>owner[i][j]=P);
+          if (centered){ u.forEach(i=>{ if (owner[i][j]<0) owner[i][j]=A; }); upper = u.filter(i=>owner[i][j]===A).length; }
+          else upper = 0;
+          continue;
+        }
+        if (centered){
+          const low = Math.min(upper, G.length);
+          G.forEach((i,t) => owner[i][j] = t < low ? P : A);
+          upper = G.length - low;
+        } else { G.forEach(i => owner[i][j] = P); upper = 0; }
+      } else {
+        if (P >= 0){
+          const d = withTxt(chainDown(P, A));
+          (centered ? d.slice(0, upper) : d).forEach(i => owner[i][j] = P);
+        }
+        if (A < n){
+          if (centered){ const u = withTxt(chainUp(A, P)); u.forEach(i => { if (owner[i][j] < 0) owner[i][j] = A; }); upper = u.length; }
+          else upper = 0;
+        }
+      }
+    }
   }
-  const order = [], map = new Map();
-  for (let i=0;i<n;i++){
-    const g = grp[i];
-    if (!map.has(g)){ map.set(g, []); order.push(g); }
-    map.get(g).push(i);
+  const out = [];
+  const merged = new Map();
+  aIdx.forEach(a => merged.set(a, new Array(nc).fill('')));
+  for (let i=0;i<n;i++) for (let j=0;j<nc;j++){
+    const o = owner[i][j]; if (o >= 0 && rows[i][j]) { const m = merged.get(o); m[j] = joinTxt(m[j], rows[i][j]); }
   }
-  return order.map(g => {
-    const out = new Array(rows[0].length).fill('');
-    for (const i of map.get(g)) rows[i].forEach((v,j) => { if (v) out[j] = joinTxt(out[j], v); });
-    return out;
-  });
+  for (let i=0;i<n;i++){
+    if (isAnchor[i]) { out.push(merged.get(i)); continue; }
+    const rest = rows[i].map((v,j) => owner[i][j] < 0 ? v : '');
+    if (rest.some(Boolean)) out.push(rest);
+  }
+  return out;
+}
+// bỏ tiêu đề lặp lại ở các trang sau + dòng số trang
+function stripRepeats(pageRows){
+  if (!$('dropHead').checked) return pageRows;
+  const sig = r => r.map(v=>String(v).trim()).filter(Boolean).join('|').toLowerCase();
+  const isData = r => r.filter(v => v && typeOf(v)).length >= 2;
+  const head = new Set();
+  if (pageRows.length){ for (const r of pageRows[0]){ if (isData(r)) break; const s = sig(r); if (s) head.add(s); } }
+  return pageRows.map((rows,p) => rows.filter(r => !isPageNo(r) && !(p > 0 && head.has(sig(r)))));
 }
 function recRows(lines, cols){
   const rows = toRows(lines, cols);
@@ -386,13 +433,13 @@ function build(){
     const W = Math.max(...used.map(p=>p.w), 1);
     const cols = columnsOf(sets, W, colTol);
     let rows = [];
-    sets.forEach(ls => rows.push(...recRows(ls, cols)));
+    stripRepeats(sets.map(ls => recRows(ls, cols))).forEach(r => rows.push(...r));
     S.sheets.push({ name:'PDF', rows: cleanup(rows), pages: used.map(p=>p.num) });
   } else {
     S.pages.forEach((p,i) => {
       if (!p.use) return;
       const cols = columnsOf([all[i]], p.w, colTol);
-      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(recRows(all[i], cols)), pages:[p.num] });
+      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(stripRepeats([recRows(all[i], cols)])[0]), pages:[p.num] });
     });
   }
   if (S.cur >= S.sheets.length) S.cur = 0;
@@ -458,7 +505,7 @@ $('grid').addEventListener('focusout', ev => {
   td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
 });
 
-['mode','numfmt','dropEmpty','mergeRec'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['mode','numfmt','dropEmpty','mergeRec','dropHead'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
 ['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
 
 // ---------- export ----------
