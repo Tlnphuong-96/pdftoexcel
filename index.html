@@ -123,6 +123,7 @@ tr:hover td{background:#111}
       <label>Độ lệch dòng <span class="rv" id="rowV"></span></label>
       <input type="range" id="rowTol" min="2" max="12" value="5">
     </div>
+    <label class="chk" title="PDF có kẻ khung bảng: chia dòng/cột đúng theo đường kẻ (chính xác nhất)"><input type="checkbox" id="useGrid" checked> Theo đường kẻ bảng</label>
     <label class="chk" title="Gộp các dòng chữ bị xuống dòng (diễn giải, loại GD) vào dòng có số tiền"><input type="checkbox" id="mergeRec" checked> Gộp giao dịch nhiều dòng</label>
     <label class="chk" title="Chỉ giữ tiêu đề bảng ở trang đầu, bỏ dòng số trang"><input type="checkbox" id="dropHead" checked> Bỏ tiêu đề lặp ở trang sau</label>
     <label class="chk"><input type="checkbox" id="dropEmpty" checked> Bỏ cột/dòng trống</label>
@@ -193,7 +194,11 @@ async function openPdf(password){
         const x = e - vp.viewBox[0], y = f - vp.viewBox[1];
         items.push({ s: it.str, x0: x, x1: x + (it.width || it.str.length*h*0.5), y, h });
       }
-      S.pages.push({ num:i, w: vp.width, items, use:true });
+      let segs = null;
+      try { segs = await getSegs(pg, vp); } catch(e){ segs = null; }
+      const page = { num:i, w: vp.width, items, use:true };
+      page.grid = segs ? analyzeGrid(segs, page) : null;
+      S.pages.push(page);
     }
     const total = S.pages.reduce((a,p)=>a+p.items.length,0);
     if (!total){
@@ -212,6 +217,124 @@ async function openPdf(password){
     }
     info(`<span class="e">Không đọc được file: ${esc(err && err.message || err)}</span>`);
   }
+}
+
+// ---------- đường kẻ bảng (nếu PDF có) ----------
+async function getSegs(pg, vp){
+  const ol = await pg.getOperatorList();
+  const O = pdfjsLib.OPS, U = pdfjsLib.Util;
+  const ox = vp.viewBox[0], oy = vp.viewBox[1];
+  let ctm = [1,0,0,1,0,0]; const st = [];
+  const H = [], V = [];
+  const tp = (x,y) => { const p = U.applyTransform([x,y], ctm); return [p[0]-ox, p[1]-oy]; };
+  const addSeg = (x1,y1,x2,y2) => {
+    const [a,b] = tp(x1,y1), [c,d] = tp(x2,y2);
+    if (Math.abs(b-d) < 1.5 && Math.abs(a-c) > 2) H.push({ y:(b+d)/2, a:Math.min(a,c), b:Math.max(a,c) });
+    else if (Math.abs(a-c) < 1.5 && Math.abs(b-d) > 2) V.push({ x:(a+c)/2, a:Math.min(b,d), b:Math.max(b,d) });
+  };
+  for (let i=0;i<ol.fnArray.length;i++){
+    const fn = ol.fnArray[i], a = ol.argsArray[i];
+    if (fn === O.save) st.push(ctm.slice());
+    else if (fn === O.restore) ctm = st.pop() || ctm;
+    else if (fn === O.transform) ctm = U.transform(ctm, a);
+    else if (fn === O.paintFormXObjectBegin){ st.push(ctm.slice()); if (a && a[0]) ctm = U.transform(ctm, a[0]); }
+    else if (fn === O.paintFormXObjectEnd) ctm = st.pop() || ctm;
+    else if (fn === O.constructPath){
+      const sub = a[0], co = a[1]; let k = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+      for (const op of sub){
+        if (op === O.rectangle){
+          const x = co[k++], y = co[k++], w = co[k++], h = co[k++];
+          const [X0,Y0] = tp(x,y), [X1,Y1] = tp(x+w,y+h);
+          const xa = Math.min(X0,X1), xb = Math.max(X0,X1), ya = Math.min(Y0,Y1), yb = Math.max(Y0,Y1);
+          if (yb-ya < 2.5 && xb-xa > 2) H.push({ y:(ya+yb)/2, a:xa, b:xb });
+          else if (xb-xa < 2.5 && yb-ya > 2) V.push({ x:(xa+xb)/2, a:ya, b:yb });
+          else if (xb-xa > 2 && yb-ya > 2){
+            H.push({ y:ya, a:xa, b:xb }, { y:yb, a:xa, b:xb });
+            V.push({ x:xa, a:ya, b:yb }, { x:xb, a:ya, b:yb });
+          }
+          cx = x; cy = y; sx = x; sy = y;
+        } else if (op === O.moveTo){ cx = co[k++]; cy = co[k++]; sx = cx; sy = cy; }
+        else if (op === O.lineTo){ const nx = co[k++], ny = co[k++]; addSeg(cx,cy,nx,ny); cx = nx; cy = ny; }
+        else if (op === O.curveTo){ k += 4; cx = co[k++]; cy = co[k++]; }
+        else if (op === O.curveTo2 || op === O.curveTo3){ k += 2; cx = co[k++]; cy = co[k++]; }
+        else if (op === O.closePath){ addSeg(cx,cy,sx,sy); cx = sx; cy = sy; }
+      }
+    }
+  }
+  return { H, V };
+}
+function clusterBy(segs, key, tol){
+  const s = segs.slice().sort((p,q)=>p[key]-q[key]); const out = [];
+  for (const g of s){
+    const c = out[out.length-1];
+    if (c && Math.abs(g[key] - c.v) <= tol){ c.items.push(g); c.v = (c.v*(c.items.length-1) + g[key])/c.items.length; }
+    else out.push({ v:g[key], items:[g] });
+  }
+  return out.map(c => {
+    const iv = c.items.map(g=>[g.a,g.b]).sort((p,q)=>p[0]-q[0]); let len = 0, ca = -Infinity, cb = -Infinity;
+    for (const [a,b] of iv){ if (a > cb){ if (cb > ca) len += cb-ca; ca = a; cb = b; } else cb = Math.max(cb,b); }
+    if (cb > ca) len += cb-ca;
+    return { v:c.v, len, items:c.items, a: Math.min(...c.items.map(g=>g.a)), b: Math.max(...c.items.map(g=>g.b)) };
+  });
+}
+// chia trang thành các dải ngang theo đường kẻ; dải nào có đường kẻ dọc cắt qua thì chia cột theo đường kẻ đó
+function analyzeGrid(segs, page){
+  const hc = clusterBy(segs.H, 'y', 1.5).filter(c => c.len >= page.w * 0.2).sort((p,q)=>q.v-p.v);
+  if (hc.length < 2) return null;
+  const bands = [];
+  for (let k=0;k<hc.length-1;k++){
+    const T = hc[k], B = hc[k+1], top = T.v, bot = B.v, ht = top - bot;
+    if (ht < 4) continue;
+    // phạm vi ngang: phần giao giữa đường trên và đường dưới
+    const x0 = Math.max(T.a, B.a), x1 = Math.min(T.b, B.b);
+    if (x1 - x0 < page.w * 0.15) continue;
+    const vs = segs.V.filter(g => g.a <= bot + ht*0.3 && g.b >= top - ht*0.3 && g.x > x0 - 3 && g.x < x1 + 3);
+    const inner = clusterBy(vs, 'x', 1.5).map(c=>c.v).filter(x => x > x0 + 3 && x < x1 - 3).sort((a,b)=>a-b);
+    if (!inner.length) continue;
+    const xs = [x0, ...inner, x1];
+    const cols = []; for (let j=0;j<xs.length-1;j++) cols.push({ a:xs[j], b:xs[j+1] });
+    bands.push({ top, bot, x0, x1, cols });
+  }
+  return bands.length ? { bands } : null;
+}
+function cellText(arr){
+  arr.sort((p,q) => (q.y - p.y) || (p.x0 - q.x0));
+  let txt = '', prev = null;
+  for (const it of arr){
+    const s = it.s.replace(/\s+/g,' ').trim(); if (!s) continue;
+    if (prev && Math.abs(prev.y - it.y) <= Math.max(prev.h, it.h) * 0.5){
+      const cw = Math.max(1, (it.x1-it.x0)/Math.max(1,it.s.length));
+      txt += (it.x0 - prev.x1 > cw*0.15 ? ' ' : '') + s;
+    } else txt = joinTxt(txt, s);
+    prev = it;
+  }
+  return txt;
+}
+function gridRows(page, rowTol, mrg, colTol){
+  const bands = page.grid.bands, out = [], outside = [];
+  const buckets = bands.map(() => []);
+  for (const it of page.items){
+    const cy = it.y + it.h*0.35, cx = (it.x0+it.x1)/2;
+    const k = bands.findIndex(b => cy <= b.top && cy >= b.bot && cx >= b.x0 - 2 && cx <= b.x1 + 2);
+    if (k >= 0) buckets[k].push(it); else outside.push(it);
+  }
+  bands.forEach((b, k) => {
+    if (!buckets[k].length) return;
+    const byCol = b.cols.map(() => []);
+    for (const it of buckets[k]) byCol[colIndex(b.cols, it)].push(it);
+    const row = byCol.map(cellText);
+    if (row.some(Boolean)) out.push({ y: b.top, row });
+  });
+  if (outside.length){
+    const ls = linesOf({ items: outside, w: page.w }, rowTol, mrg);
+    if (ls.length){
+      const cols = columnsOf([ls], page.w, colTol);
+      const rows = toRows(ls, cols);
+      rows.forEach((row, i) => out.push({ y: ls[i].y, row }));
+    }
+  }
+  out.sort((a,b) => b.y - a.y);
+  return out.map(o => o.row);
 }
 
 // ---------- layout analysis ----------
@@ -358,6 +481,23 @@ function mergeRecords(lines, rows){
   }
   return out;
 }
+// giao dịch bị cắt ngang khi sang trang: phần chữ đầu trang sau nối vào dòng cuối trang trước
+function joinPageBreaks(pageRows){
+  if (!$('mergeRec').checked) return pageRows;
+  const typed = r => r.filter(v => v && typeOf(v)).length;
+  for (let p=1;p<pageRows.length;p++){
+    let prev = null;
+    for (let q=p-1;q>=0 && !prev;q--) for (let i=pageRows[q].length-1;i>=0;i--) if (typed(pageRows[q][i]) >= 2){ prev = pageRows[q][i]; break; }
+    if (!prev) continue;
+    while (pageRows[p].length){
+      const r = pageRows[p][0];
+      if (typed(r) >= 2 || r.filter(Boolean).length > 3 || !r.some(Boolean)) break;
+      r.forEach((v,j) => { if (v) prev[j] = joinTxt(prev[j] || '', v); });
+      pageRows[p].shift();
+    }
+  }
+  return pageRows;
+}
 // bỏ tiêu đề lặp lại ở các trang sau + dòng số trang
 function stripRepeats(pageRows){
   if (!$('dropHead').checked) return pageRows;
@@ -373,6 +513,8 @@ function recRows(lines, cols){
 }
 
 function cleanup(rows){
+  const w = Math.max(0, ...rows.map(r=>r.length));
+  rows = rows.map(r => r.length < w ? r.concat(new Array(w - r.length).fill('')) : r);
   if (!$('dropEmpty').checked) return rows;
   rows = rows.filter(r => r.some(v => v !== ''));
   if (!rows.length) return rows;
@@ -398,7 +540,8 @@ function detectFmt(){
 function typeOf(s){
   const t = s.trim();
   if (!t) return null;
-  const dm = t.match(DATE_RE);
+  let dm = t.match(DATE_RE), ymd = null;
+  if (!dm && (ymd = t.match(/^(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/))) dm = [t, ymd[3], ymd[2], ymd[1]];
   if (dm){
     const d=+dm[1], m=+dm[2], y=+dm[3];
     if (d>=1&&d<=31&&m>=1&&m<=12&&y>=1900&&y<=2100){
@@ -426,26 +569,31 @@ function build(){
   $('rowV').textContent = rowTol.toFixed(1); $('mrgV').textContent = mrg.toFixed(1); $('colV').textContent = colTol + '%';
   S.fmt = $('numfmt').value === 'auto' ? detectFmt() : $('numfmt').value;
   const used = S.pages.filter(p=>p.use);
-  const all = S.pages.map(p => linesOf(p, rowTol, mrg));
+  const useGrid = $('useGrid').checked;
+  const isGrid = p => useGrid && p.grid;
+  const all = S.pages.map(p => isGrid(p) ? null : linesOf(p, rowTol, mrg));
+  const rowsOf = (p, i, cols) => isGrid(p) ? gridRows(p, rowTol, mrg, colTol) : recRows(all[i], cols);
   S.sheets = [];
   if ($('mode').value === 'one'){
-    const sets = S.pages.map((p,i)=>p.use?all[i]:null).filter(Boolean);
+    const idx = S.pages.map((p,i)=>p.use?i:-1).filter(i=>i>=0);
+    const plain = idx.filter(i => all[i]).map(i => all[i]);
     const W = Math.max(...used.map(p=>p.w), 1);
-    const cols = columnsOf(sets, W, colTol);
+    const cols = plain.length ? columnsOf(plain, W, colTol) : null;
     let rows = [];
-    stripRepeats(sets.map(ls => recRows(ls, cols))).forEach(r => rows.push(...r));
+    joinPageBreaks(stripRepeats(idx.map(i => rowsOf(S.pages[i], i, cols)))).forEach(r => rows.push(...r));
     S.sheets.push({ name:'PDF', rows: cleanup(rows), pages: used.map(p=>p.num) });
   } else {
     S.pages.forEach((p,i) => {
       if (!p.use) return;
-      const cols = columnsOf([all[i]], p.w, colTol);
-      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(stripRepeats([recRows(all[i], cols)])[0]), pages:[p.num] });
+      const cols = all[i] ? columnsOf([all[i]], p.w, colTol) : null;
+      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(stripRepeats([rowsOf(p, i, cols)])[0]), pages:[p.num] });
     });
   }
+  const nGrid = used.filter(isGrid).length;
   if (S.cur >= S.sheets.length) S.cur = 0;
   const nr = S.sheets.reduce((a,s)=>a+s.rows.length,0);
   const fmtTxt = {vn:'số kiểu VN',us:'số kiểu US',text:'giữ số dạng chữ'}[S.fmt];
-  info(`<span class="file">${esc(S.name)}.pdf</span> · ${S.pages.length} trang · ${used.length} trang được chọn · <span class="ok">${nr} dòng</span> · ${fmtTxt}${$('numfmt').value==='auto'?' (tự nhận)':''}`);
+  info(`<span class="file">${esc(S.name)}.pdf</span> · ${S.pages.length} trang · ${used.length} trang được chọn · <span class="ok">${nr} dòng</span> · ${fmtTxt}${$('numfmt').value==='auto'?' (tự nhận)':''}${nGrid ? ` · đọc theo đường kẻ bảng: ${nGrid}/${used.length} trang` : ''}`);
   renderTabs(); renderGrid();
   $('dlBtn').disabled = !S.sheets.length;
 }
@@ -505,7 +653,7 @@ $('grid').addEventListener('focusout', ev => {
   td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
 });
 
-['mode','numfmt','dropEmpty','mergeRec','dropHead'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['mode','numfmt','dropEmpty','mergeRec','dropHead','useGrid'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
 ['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
 
 // ---------- export ----------
