@@ -123,6 +123,7 @@ tr:hover td{background:#111}
       <label>Độ lệch dòng <span class="rv" id="rowV"></span></label>
       <input type="range" id="rowTol" min="2" max="12" value="5">
     </div>
+    <label class="chk" title="Gộp các dòng chữ bị xuống dòng (diễn giải, loại GD) vào dòng có số tiền"><input type="checkbox" id="mergeRec" checked> Gộp giao dịch nhiều dòng</label>
     <label class="chk"><input type="checkbox" id="dropEmpty" checked> Bỏ cột/dòng trống</label>
     <div class="sp"></div>
     <button class="btn" id="copyBtn" title="Sao chép bảng đang xem để dán vào Excel">Sao chép bảng</button>
@@ -287,6 +288,43 @@ function toRows(lines, cols){
 }
 function colStart(cols, x){ let k=0; for (let i=0;i<cols.length;i++) if (cols[i].a <= x+2) k=i; return k; }
 
+// gộp các dòng chữ của cùng 1 giao dịch (ô xuống dòng) vào dòng có số tiền
+function joinTxt(a, b){ if (!a) return b; if (!b) return a; return /[-\/]$/.test(a) ? a + b : a + ' ' + b; }
+function mergeRecords(lines, rows){
+  const n = lines.length;
+  const isAnchor = lines.map(L => L.cells.filter(c => typeOf(c.s)).length >= 2);
+  const aIdx = []; isAnchor.forEach((v,i)=>{ if (v) aIdx.push(i); });
+  if (aIdx.length < 2) return rows;
+  const gaps = []; for (let k=1;k<aIdx.length;k++) gaps.push(Math.abs(lines[aIdx[k-1]].y - lines[aIdx[k]].y));
+  gaps.sort((a,b)=>a-b);
+  const maxD = gaps[Math.floor(gaps.length/2)] * 0.75;
+  const grp = new Array(n);
+  for (let i=0;i<n;i++){
+    grp[i] = i;
+    if (isAnchor[i]) continue;
+    const L = lines[i];
+    if (L.cells.length >= 3) continue;                       // dòng tiêu đề cột → giữ riêng
+    let best=-1, bd=Infinity;
+    for (const a of aIdx){ const d = Math.abs(lines[a].y - L.y); if (d < bd){ bd=d; best=a; } }
+    if (best >= 0 && bd <= maxD) grp[i] = best;
+  }
+  const order = [], map = new Map();
+  for (let i=0;i<n;i++){
+    const g = grp[i];
+    if (!map.has(g)){ map.set(g, []); order.push(g); }
+    map.get(g).push(i);
+  }
+  return order.map(g => {
+    const out = new Array(rows[0].length).fill('');
+    for (const i of map.get(g)) rows[i].forEach((v,j) => { if (v) out[j] = joinTxt(out[j], v); });
+    return out;
+  });
+}
+function recRows(lines, cols){
+  const rows = toRows(lines, cols);
+  return $('mergeRec').checked ? mergeRecords(lines, rows) : rows;
+}
+
 function cleanup(rows){
   if (!$('dropEmpty').checked) return rows;
   rows = rows.filter(r => r.some(v => v !== ''));
@@ -348,13 +386,13 @@ function build(){
     const W = Math.max(...used.map(p=>p.w), 1);
     const cols = columnsOf(sets, W, colTol);
     let rows = [];
-    sets.forEach(ls => rows.push(...toRows(ls, cols)));
+    sets.forEach(ls => rows.push(...recRows(ls, cols)));
     S.sheets.push({ name:'PDF', rows: cleanup(rows), pages: used.map(p=>p.num) });
   } else {
     S.pages.forEach((p,i) => {
       if (!p.use) return;
       const cols = columnsOf([all[i]], p.w, colTol);
-      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(toRows(all[i], cols)), pages:[p.num] });
+      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(recRows(all[i], cols)), pages:[p.num] });
     });
   }
   if (S.cur >= S.sheets.length) S.cur = 0;
@@ -420,7 +458,7 @@ $('grid').addEventListener('focusout', ev => {
   td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
 });
 
-['mode','numfmt','dropEmpty'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['mode','numfmt','dropEmpty','mergeRec'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
 ['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
 
 // ---------- export ----------
