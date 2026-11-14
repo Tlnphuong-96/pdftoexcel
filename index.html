@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdftoexcel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#000;--s1:#0d0d0d;--s2:#151515;--s3:#1d1d1d;--line:#262626;--line2:#333;
+  --tx:#ededed;--tx2:#a3a3a3;--tx3:#6b6b6b;--ac:#3ddc84;--ac2:#1f7a49;--warn:#f5b041;--err:#ff6b6b;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 'Be Vietnam Pro',system-ui,sans-serif}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 24px 60px}
+header{display:flex;align-items:baseline;gap:14px;margin-bottom:22px}
+h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--ac)}
+header p{margin:0;color:var(--tx3);font-size:13px}
+.drop{display:block;border:1.5px dashed var(--line2);border-radius:14px;background:var(--s1);padding:42px 20px;text-align:center;cursor:pointer;transition:.15s}
+.drop:hover,.drop.over{border-color:var(--ac);background:#06140c}
+.drop b{display:block;font-size:16px;font-weight:600;margin-bottom:4px}
+.drop small{color:var(--tx3)}
+.drop input{display:none}
+.bar{display:none;flex-wrap:wrap;gap:12px 18px;align-items:end;background:var(--s1);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-top:16px}
+.bar.show{display:flex}
+.fld{display:flex;flex-direction:column;gap:5px;min-width:130px}
+.fld label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);font-weight:600}
+select,input[type=number]{background:var(--s2);color:var(--tx);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;outline:none}
+select:focus,input:focus{border-color:var(--ac)}
+input[type=range]{accent-color:var(--ac);width:130px}
+.rv{font-family:var(--mono);font-size:12px;color:var(--tx2)}
+.chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--tx2);cursor:pointer;padding-bottom:7px}
+.chk input{accent-color:var(--ac)}
+.sp{flex:1}
+.btn{border:1px solid var(--line2);background:var(--s2);color:var(--tx);padding:9px 15px;border-radius:9px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:.12s;white-space:nowrap}
+.btn:hover{border-color:var(--tx3)}
+.btn.pri{background:var(--ac);border-color:var(--ac);color:#03140a}
+.btn.pri:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.4;cursor:default}
+.info{margin-top:14px;font-size:13px;color:var(--tx2);min-height:20px}
+.info .file{color:var(--tx);font-weight:600}
+.info .w{color:var(--warn)} .info .e{color:var(--err)} .info .ok{color:var(--ac)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:18px}
+.tab{display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:8px;background:var(--s1);border:1px solid var(--line);font-size:12.5px;color:var(--tx2);cursor:pointer;user-select:none}
+.tab.on{background:var(--s3);border-color:var(--ac2);color:var(--tx)}
+.tab input{accent-color:var(--ac);margin:0}
+.tab .n{font-family:var(--mono);font-size:11px;color:var(--tx3)}
+.grid{margin-top:12px;border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:66vh;background:var(--s1)}
+table{border-collapse:collapse;font-size:12.5px;min-width:100%}
+th,td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:5px 9px;white-space:pre;vertical-align:top}
+thead th{position:sticky;top:0;background:var(--s3);color:var(--tx3);font-family:var(--mono);font-size:11px;font-weight:500;z-index:2}
+tbody th{position:sticky;left:0;background:var(--s2);color:var(--tx3);font-family:var(--mono);font-size:11px;font-weight:400;text-align:right;z-index:1}
+td{color:var(--tx);outline:none;min-width:40px}
+td:focus{background:#0b2416;box-shadow:inset 0 0 0 1px var(--ac)}
+td.num{text-align:right;font-family:var(--mono);color:#cfe9ff}
+td.neg{color:#ff9a9a}
+td.dt{font-family:var(--mono);color:#ffe2a8}
+tr:hover td{background:#111}
+.hint{margin-top:10px;font-size:12px;color:var(--tx3)}
+.hint kbd{font-family:var(--mono);background:var(--s2);border:1px solid var(--line2);border-radius:4px;padding:0 5px;font-size:11px}
+.legend{display:flex;gap:14px;margin-left:auto;font-size:11.5px;color:var(--tx3)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--s3);border:1px solid var(--line2);color:var(--tx);padding:10px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%)}
+.pwd{display:none;gap:8px;align-items:center;margin-top:12px}
+.pwd.show{display:flex}
+.pwd input{background:var(--s2);color:var(--tx);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>pdf<span>to</span>excel</h1>
+    <p>Chuyển bảng trong PDF thành file .xlsx · xử lý ngay trên máy, không gửi file đi đâu</p>
+  </header>
+
+  <label class="drop" id="drop">
+    <input type="file" id="file" accept="application/pdf,.pdf">
+    <b>Kéo thả file PDF vào đây</b>
+    <small>hoặc bấm để chọn file · PDF có lớp chữ (xuất từ phần mềm), không áp dụng cho bản scan ảnh</small>
+  </label>
+
+  <div class="pwd" id="pwd">
+    <span style="color:var(--warn);font-size:13px">File có mật khẩu:</span>
+    <input type="password" id="pwdIn" placeholder="Nhập mật khẩu">
+    <button class="btn" id="pwdBtn">Mở</button>
+  </div>
+
+  <div class="info" id="info"></div>
+
+  <div class="bar" id="bar">
+    <div class="fld">
+      <label>Gộp trang</label>
+      <select id="mode">
+        <option value="one">Tất cả vào 1 sheet</option>
+        <option value="each">Mỗi trang 1 sheet</option>
+      </select>
+    </div>
+    <div class="fld">
+      <label>Định dạng số</label>
+      <select id="numfmt">
+        <option value="auto">Tự nhận diện</option>
+        <option value="vn">1.234.567,89 (VN)</option>
+        <option value="us">1,234,567.89 (US)</option>
+        <option value="text">Giữ nguyên dạng chữ</option>
+      </select>
+    </div>
+    <div class="fld">
+      <label>Tách cột <span class="rv" id="colV"></span></label>
+      <input type="range" id="colTol" min="0" max="30" value="6">
+    </div>
+    <div class="fld">
+      <label>Gộp chữ trong ô <span class="rv" id="mrgV"></span></label>
+      <input type="range" id="mrg" min="2" max="40" value="12">
+    </div>
+    <div class="fld">
+      <label>Độ lệch dòng <span class="rv" id="rowV"></span></label>
+      <input type="range" id="rowTol" min="2" max="12" value="5">
+    </div>
+    <label class="chk"><input type="checkbox" id="dropEmpty" checked> Bỏ cột/dòng trống</label>
+    <div class="sp"></div>
+    <button class="btn" id="copyBtn" title="Sao chép bảng đang xem để dán vào Excel">Sao chép bảng</button>
+    <button class="btn pri" id="dlBtn">Tải file Excel</button>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="grid" id="grid" style="display:none"></div>
+  <div class="hint" id="hint" style="display:none">
+    Bấm vào ô để sửa trực tiếp trước khi xuất. Kéo thanh <b>Tách cột</b> sang phải nếu cột bị dính vào nhau, sang trái nếu một cột bị tách đôi (chỉnh lại sẽ mất phần đã sửa tay).
+    <span class="legend" style="display:inline-flex;margin-left:12px"><span><i style="background:#cfe9ff"></i>Số</span><span><i style="background:#ffe2a8"></i>Ngày dd/mm/yyyy</span><span><i style="background:#ededed"></i>Chữ</span></span>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const S = { name:'', pages:[], sheets:[], cur:0, fmt:'vn', downloads:null, pdfData:null };
+
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// downloads capability (optional)
+try {
+  if (window.claude && claude.use) claude.use('downloads').then(d => { S.downloads = d; }).catch(()=>{});
+} catch(e){}
+
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2600); }
+function info(html){ $('info').innerHTML = html; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- load ----------
+const drop = $('drop');
+['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) loadFile(f); });
+$('file').addEventListener('change', ev => { const f = ev.target.files[0]; if (f) loadFile(f); ev.target.value=''; });
+$('pwdBtn').addEventListener('click', () => openPdf($('pwdIn').value));
+$('pwdIn').addEventListener('keydown', e => { if (e.key==='Enter') openPdf($('pwdIn').value); });
+
+async function loadFile(f){
+  if (!window.pdfjsLib){ info('<span class="e">Không tải được thư viện đọc PDF. Kiểm tra kết nối mạng rồi tải lại trang.</span>'); return; }
+  S.name = f.name.replace(/\.pdf$/i,'');
+  S.pdfData = new Uint8Array(await f.arrayBuffer());
+  $('pwd').classList.remove('show');
+  openPdf();
+}
+
+async function openPdf(password){
+  info(`Đang đọc <span class="file">${esc(S.name)}.pdf</span>…`);
+  try {
+    const task = pdfjsLib.getDocument({ data: S.pdfData.slice(0), password, isEvalSupported:false, disableFontFace:true });
+    const pdf = await task.promise;
+    $('pwd').classList.remove('show');
+    S.pages = [];
+    for (let i=1;i<=pdf.numPages;i++){
+      info(`Đang đọc <span class="file">${esc(S.name)}.pdf</span> — trang ${i}/${pdf.numPages}…`);
+      const pg = await pdf.getPage(i);
+      const vp = pg.getViewport({ scale:1 });
+      const tc = await pg.getTextContent();
+      const items = [];
+      for (const it of tc.items){
+        if (!it.str || !it.str.trim()) continue;
+        const [a,b,c,d,e,f] = it.transform;
+        const h = Math.hypot(c,d) || it.height || 8;
+        const x = e - vp.viewBox[0], y = f - vp.viewBox[1];
+        items.push({ s: it.str, x0: x, x1: x + (it.width || it.str.length*h*0.5), y, h });
+      }
+      S.pages.push({ num:i, w: vp.width, items, use:true });
+    }
+    const total = S.pages.reduce((a,p)=>a+p.items.length,0);
+    if (!total){
+      info(`<span class="e">File <span class="file">${esc(S.name)}.pdf</span> không có lớp chữ (PDF scan dạng ảnh).</span> Tool này không nhận dạng chữ trên ảnh — cần OCR trước.`);
+      $('bar').classList.remove('show'); $('grid').style.display='none'; $('tabs').innerHTML=''; $('hint').style.display='none';
+      return;
+    }
+    S.cur = 0;
+    $('bar').classList.add('show');
+    build();
+  } catch(err){
+    if (err && err.name === 'PasswordException'){
+      $('pwd').classList.add('show'); $('pwdIn').focus();
+      info(password ? '<span class="e">Sai mật khẩu, thử lại.</span>' : '<span class="w">File được bảo vệ bằng mật khẩu.</span>');
+      return;
+    }
+    info(`<span class="e">Không đọc được file: ${esc(err && err.message || err)}</span>`);
+  }
+}
+
+// ---------- layout analysis ----------
+function linesOf(page, rowTol, mrg){
+  const its = page.items.slice().sort((a,b)=> b.y - a.y || a.x0 - b.x0);
+  const lines = [];
+  for (const it of its){
+    let L = lines.length ? lines[lines.length-1] : null;
+    if (L && Math.abs(L.y - it.y) <= Math.max(L.h, it.h) * rowTol) { L.items.push(it); L.h = Math.max(L.h,it.h); }
+    else lines.push({ y: it.y, h: it.h, items:[it] });
+  }
+  // merge items into cells within each line
+  for (const L of lines){
+    L.items.sort((a,b)=>a.x0-b.x0);
+    const cells = [];
+    for (const it of L.items){
+      const c = cells[cells.length-1];
+      const cw = Math.max(2, (it.x1-it.x0)/Math.max(1,it.s.length), c ? (c.x1-c.x0)/Math.max(1,c.s.length) : 0);
+      const gap = c ? it.x0 - c.x1 : Infinity;
+      if (c && gap < cw * mrg){
+        c.s += (gap > cw*0.15 && !c.s.endsWith(' ') && !it.s.startsWith(' ') ? ' ' : '') + it.s;
+        c.x1 = Math.max(c.x1, it.x1);
+      } else cells.push({ s: it.s, x0: it.x0, x1: it.x1 });
+    }
+    cells.forEach(c => c.s = c.s.replace(/\s+/g,' ').trim());
+    L.cells = cells.filter(c=>c.s);
+  }
+  return lines.filter(L=>L.cells.length);
+}
+
+function columnsOf(lineSets, width, tolPct){
+  const W = Math.ceil(width) + 2;
+  const cov = new Uint16Array(W);
+  let n = 0;
+  for (const lines of lineSets) for (const L of lines){
+    if (L.cells.length < 2) continue;
+    n++;
+    for (const c of L.cells){
+      const a = Math.max(0, Math.floor(c.x0)), b = Math.min(W-1, Math.ceil(c.x1));
+      for (let i=a;i<=b;i++) cov[i]++;
+    }
+  }
+  if (!n) return [{a:0,b:W}];
+  const thr = Math.floor(n * tolPct / 100);
+  const cols = []; let start = -1;
+  for (let i=0;i<W;i++){
+    if (cov[i] > thr){ if (start<0) start=i; }
+    else if (start>=0){ cols.push({a:start,b:i-1}); start=-1; }
+  }
+  if (start>=0) cols.push({a:start,b:W-1});
+  return cols.length ? cols : [{a:0,b:W}];
+}
+
+function colIndex(cols, c){
+  const mid = (c.x0 + c.x1)/2;
+  for (let i=0;i<cols.length;i++) if (mid >= cols[i].a && mid <= cols[i].b) return i;
+  // nearest by distance to interval
+  let best=0, bd=Infinity;
+  for (let i=0;i<cols.length;i++){
+    const d = mid < cols[i].a ? cols[i].a-mid : mid-cols[i].b;
+    if (d < bd){ bd=d; best=i; }
+  }
+  return best;
+}
+
+function toRows(lines, cols){
+  return lines.map(L => {
+    const row = new Array(cols.length).fill('');
+    for (const c of L.cells){
+      const i = L.cells.length === 1 ? colStart(cols, c.x0) : colIndex(cols, c);
+      row[i] = row[i] ? row[i] + ' ' + c.s : c.s;
+    }
+    return row;
+  });
+}
+function colStart(cols, x){ let k=0; for (let i=0;i<cols.length;i++) if (cols[i].a <= x+2) k=i; return k; }
+
+function cleanup(rows){
+  if (!$('dropEmpty').checked) return rows;
+  rows = rows.filter(r => r.some(v => v !== ''));
+  if (!rows.length) return rows;
+  const keep = rows[0].map((_,j) => rows.some(r => r[j] !== ''));
+  return rows.map(r => r.filter((_,j)=>keep[j]));
+}
+
+// ---------- value typing ----------
+const DATE_RE = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/;
+const VN_RE = /^(\d{1,3}(\.\d{3})+(,\d+)?|\d+,\d+|\d+)$/;
+const US_RE = /^(\d{1,3}(,\d{3})+(\.\d+)?|\d+\.\d+|\d+)$/;
+
+function detectFmt(){
+  let vn=0, us=0;
+  for (const p of S.pages) for (const it of p.items){
+    const t = it.s.trim().replace(/^[(\-]+|[)]+$/g,'');
+    if (/^\d{1,3}(\.\d{3}){2,}(,\d+)?$/.test(t) || /^\d{1,3}(\.\d{3})+,\d+$/.test(t) || /^\d+,\d{1,2}$/.test(t)) vn++;
+    else if (/^\d{1,3}(,\d{3}){2,}(\.\d+)?$/.test(t) || /^\d{1,3}(,\d{3})+\.\d+$/.test(t) || /^\d+\.\d{1,2}$/.test(t)) us++;
+  }
+  return us > vn ? 'us' : 'vn';
+}
+
+function typeOf(s){
+  const t = s.trim();
+  if (!t) return null;
+  const dm = t.match(DATE_RE);
+  if (dm){
+    const d=+dm[1], m=+dm[2], y=+dm[3];
+    if (d>=1&&d<=31&&m>=1&&m<=12&&y>=1900&&y<=2100){
+      const dt = new Date(Date.UTC(y,m-1,d));
+      if (dt.getUTCDate()===d) return { t:'d', v:(Date.UTC(y,m-1,d)-Date.UTC(1899,11,30))/86400000 };
+    }
+  }
+  if (S.fmt === 'text') return null;
+  let neg = false, core = t;
+  if (/^\(.+\)$/.test(core)){ neg = true; core = core.slice(1,-1).trim(); }
+  if (/^-\s?/.test(core)){ neg = !neg; core = core.replace(/^-\s?/,''); }
+  if (!/^\d/.test(core)) return null;
+  if (/^0\d/.test(core) && !/^0[.,]\d/.test(core)) return null;       // mã số có số 0 đầu → giữ chữ
+  if (core.replace(/\D/g,'').length > 15) return null;                 // MST, số TK dài → giữ chữ
+  let v;
+  if (S.fmt === 'vn'){ if (!VN_RE.test(core)) return null; v = parseFloat(core.replace(/\./g,'').replace(',','.')); }
+  else { if (!US_RE.test(core)) return null; v = parseFloat(core.replace(/,/g,'')); }
+  if (!isFinite(v)) return null;
+  return { t:'n', v: neg ? -v : v, dec: /[.,]\d+$/.test(core) && (S.fmt==='vn' ? core.includes(',') : core.includes('.')) };
+}
+
+// ---------- build ----------
+function build(){
+  const rowTol = +$('rowTol').value/10, mrg = +$('mrg').value/10, colTol = +$('colTol').value;
+  $('rowV').textContent = rowTol.toFixed(1); $('mrgV').textContent = mrg.toFixed(1); $('colV').textContent = colTol + '%';
+  S.fmt = $('numfmt').value === 'auto' ? detectFmt() : $('numfmt').value;
+  const used = S.pages.filter(p=>p.use);
+  const all = S.pages.map(p => linesOf(p, rowTol, mrg));
+  S.sheets = [];
+  if ($('mode').value === 'one'){
+    const sets = S.pages.map((p,i)=>p.use?all[i]:null).filter(Boolean);
+    const W = Math.max(...used.map(p=>p.w), 1);
+    const cols = columnsOf(sets, W, colTol);
+    let rows = [];
+    sets.forEach(ls => rows.push(...toRows(ls, cols)));
+    S.sheets.push({ name:'PDF', rows: cleanup(rows), pages: used.map(p=>p.num) });
+  } else {
+    S.pages.forEach((p,i) => {
+      if (!p.use) return;
+      const cols = columnsOf([all[i]], p.w, colTol);
+      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(toRows(all[i], cols)), pages:[p.num] });
+    });
+  }
+  if (S.cur >= S.sheets.length) S.cur = 0;
+  const nr = S.sheets.reduce((a,s)=>a+s.rows.length,0);
+  const fmtTxt = {vn:'số kiểu VN',us:'số kiểu US',text:'giữ số dạng chữ'}[S.fmt];
+  info(`<span class="file">${esc(S.name)}.pdf</span> · ${S.pages.length} trang · ${used.length} trang được chọn · <span class="ok">${nr} dòng</span> · ${fmtTxt}${$('numfmt').value==='auto'?' (tự nhận)':''}`);
+  renderTabs(); renderGrid();
+  $('dlBtn').disabled = !S.sheets.length;
+}
+
+function renderTabs(){
+  const box = $('tabs'); box.innerHTML = '';
+  // page include toggles
+  S.pages.forEach(p => {
+    const el = document.createElement('label');
+    el.className = 'tab';
+    const isCur = S.sheets[S.cur] && S.sheets[S.cur].pages.includes(p.num) && $('mode').value==='each';
+    if (isCur) el.classList.add('on');
+    el.innerHTML = `<input type="checkbox" ${p.use?'checked':''}> Trang ${p.num} <span class="n">${p.items.length}</span>`;
+    const cb = el.querySelector('input');
+    cb.addEventListener('change', () => { p.use = cb.checked; build(); });
+    el.addEventListener('click', ev => {
+      if (ev.target === cb) return;
+      ev.preventDefault();
+      if ($('mode').value !== 'each' || !p.use) return;
+      S.cur = S.sheets.findIndex(s => s.pages[0] === p.num); renderTabs(); renderGrid();
+    });
+    box.appendChild(el);
+  });
+}
+
+function colName(i){ let s=''; i++; while(i>0){ const m=(i-1)%26; s=String.fromCharCode(65+m)+s; i=Math.floor((i-1)/26);} return s; }
+
+function renderGrid(){
+  const g = $('grid'), sh = S.sheets[S.cur];
+  if (!sh || !sh.rows.length){ g.style.display='none'; $('hint').style.display='none'; return; }
+  g.style.display=''; $('hint').style.display='';
+  const nc = Math.max(...sh.rows.map(r=>r.length));
+  let h = '<table><thead><tr><th></th>';
+  for (let j=0;j<nc;j++) h += `<th>${colName(j)}</th>`;
+  h += '</tr></thead><tbody>';
+  sh.rows.forEach((r,i) => {
+    h += `<tr><th>${i+1}</th>`;
+    for (let j=0;j<nc;j++){
+      const v = r[j] ?? '', ty = typeOf(v);
+      const cls = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
+      h += `<td contenteditable="plaintext-only" spellcheck="false" data-r="${i}" data-c="${j}" class="${cls}">${esc(v)}</td>`;
+    }
+    h += '</tr>';
+  });
+  g.innerHTML = h + '</tbody></table>';
+}
+
+$('grid').addEventListener('input', ev => {
+  const td = ev.target.closest('td'); if (!td) return;
+  const sh = S.sheets[S.cur], r = +td.dataset.r, c = +td.dataset.c;
+  while (sh.rows[r].length <= c) sh.rows[r].push('');
+  sh.rows[r][c] = td.textContent.replace(/\n/g,' ');
+});
+$('grid').addEventListener('focusout', ev => {
+  const td = ev.target.closest('td'); if (!td) return;
+  const ty = typeOf(td.textContent);
+  td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
+});
+
+['mode','numfmt','dropEmpty'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
+
+// ---------- export ----------
+function makeWB(){
+  const wb = XLSX.utils.book_new();
+  const names = new Set();
+  for (const sh of S.sheets){
+    const ws = {};
+    let maxC = 0;
+    const widths = [];
+    sh.rows.forEach((r,i) => {
+      maxC = Math.max(maxC, r.length);
+      r.forEach((v,j) => {
+        if (v === '' || v == null) return;
+        const ref = XLSX.utils.encode_cell({r:i,c:j});
+        const ty = typeOf(v);
+        if (ty && ty.t==='d') ws[ref] = { t:'n', v:ty.v, z:'dd/mm/yyyy' };
+        else if (ty) ws[ref] = { t:'n', v:ty.v, z: ty.dec ? '#,##0.00;(#,##0.00)' : '#,##0;(#,##0)' };
+        else ws[ref] = { t:'s', v:String(v) };
+        widths[j] = Math.max(widths[j]||6, Math.min(60, String(v).length + 2));
+      });
+    });
+    ws['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:Math.max(0,sh.rows.length-1), c:Math.max(0,maxC-1)}});
+    ws['!cols'] = widths.map(w => ({ wch: w || 8 }));
+    let nm = sh.name.slice(0,31), k=2; while (names.has(nm)) nm = (sh.name.slice(0,27)+' ('+(k++)+')'); names.add(nm);
+    XLSX.utils.book_append_sheet(wb, ws, nm);
+  }
+  return wb;
+}
+
+$('dlBtn').addEventListener('click', async () => {
+  if (!window.XLSX){ toast('Chưa tải được thư viện Excel'); return; }
+  const fn = (S.name || 'pdf') + '.xlsx';
+  const buf = XLSX.write(makeWB(), { type:'array', bookType:'xlsx' });
+  const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  if (S.downloads){
+    try { await S.downloads.save({ filename: fn, data: blob }); toast('Đã lưu ' + fn); return; }
+    catch(e){
+      if (e && e.code === 'declined') { toast('Đã huỷ tải'); return; }
+      if (e && e.code === 'rate_limited') { toast('Đang có hộp thoại tải khác, thử lại sau giây lát'); return; }
+    }
+  }
+  // fallback: thử tải trực tiếp (dùng khi mở file HTML ngoài trình duyệt)
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = fn;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    toast('Đang tải ' + fn + ' — nếu không thấy file, dùng nút "Sao chép bảng" rồi dán vào Excel');
+  } catch(e){ toast('Không tải được — dùng nút "Sao chép bảng" rồi dán vào Excel'); }
+});
+
+$('copyBtn').addEventListener('click', async () => {
+  const sh = S.sheets[S.cur]; if (!sh) return;
+  const tsv = sh.rows.map(r => r.map(v => String(v ?? '').replace(/\t/g,' ')).join('\t')).join('\r\n');
+  try { await navigator.clipboard.writeText(tsv); toast(`Đã sao chép ${sh.rows.length} dòng — dán vào Excel bằng Ctrl+V`); }
+  catch(e){
+    const ta = document.createElement('textarea'); ta.value = tsv; document.body.appendChild(ta); ta.select();
+    let ok=false; try { ok = document.execCommand('copy'); } catch(_){}
+    ta.remove(); toast(ok ? 'Đã sao chép — dán vào Excel bằng Ctrl+V' : 'Trình duyệt chặn sao chép');
+  }
+});
+})();
+</script>
+</body>
+</html>
