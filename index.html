@@ -335,11 +335,23 @@ function gridRows(page, rowTol, mrg, colTol){
     row._nc = b.cols.length; row._k = keyOf(b);
     return row;
   };
+  // chữ chạy liền qua ranh giới cột (đoạn văn bị cắt ngang cột) → không phải dòng bảng
+  const flowsAcross = (b, its) => {
+    let touch = 0;
+    for (const p of its) for (const q of its){
+      if (p === q || Math.abs(p.y - q.y) > Math.max(p.h, q.h) * 0.4) continue;
+      const g = q.x0 - p.x1;
+      if (g < -0.5 || g > 1.2) continue;
+      const jp = colIndex(b.cols, p), jq = colIndex(b.cols, q);
+      if (jq === jp + 1) touch++;
+    }
+    return touch >= 2;
+  };
   // chữ tràn qua nhiều cột → dải này không phải dòng bảng thật (đoạn văn, ô gộp)
   const crosses = (b, it) => { const c = b.cols[colIndex(b.cols, it)]; return it.x0 < c.a - 3 || it.x1 > c.b + 3; };
   bands.forEach((b, k) => {
     if (!buckets[k].length) return;
-    if (buckets[k].filter(it => crosses(b, it)).length > buckets[k].length * 0.25){ outside.push(...buckets[k]); return; }
+    if (buckets[k].filter(it => crosses(b, it)).length > buckets[k].length * 0.25 || flowsAcross(b, buckets[k])){ outside.push(...buckets[k]); return; }
     const row = mkRow(b, buckets[k]);
     if (row.some(Boolean)) out.push({ y: b.top, row });
   });
