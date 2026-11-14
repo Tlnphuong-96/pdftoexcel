@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
@@ -123,6 +124,7 @@ tr:hover td{background:#111}
       <label>Độ lệch dòng <span class="rv" id="rowV"></span></label>
       <input type="range" id="rowTol" min="2" max="12" value="5">
     </div>
+    <label class="chk" title="Chỉ lấy bảng chi tiết giao dịch, bỏ các khung thông tin phía trên"><input type="checkbox" id="mainOnly" checked> Chỉ lấy bảng chính</label>
     <label class="chk" title="PDF có kẻ khung bảng: chia dòng/cột đúng theo đường kẻ (chính xác nhất)"><input type="checkbox" id="useGrid" checked> Theo đường kẻ bảng</label>
     <label class="chk" title="Gộp các dòng chữ bị xuống dòng (diễn giải, loại GD) vào dòng có số tiền"><input type="checkbox" id="mergeRec" checked> Gộp giao dịch nhiều dòng</label>
     <label class="chk" title="Chỉ giữ tiêu đề bảng ở trang đầu, bỏ dòng số trang"><input type="checkbox" id="dropHead" checked> Bỏ tiêu đề lặp ở trang sau</label>
@@ -289,7 +291,14 @@ function analyzeGrid(segs, page){
     const x0 = Math.max(T.a, B.a), x1 = Math.min(T.b, B.b);
     if (x1 - x0 < page.w * 0.15) continue;
     const vs = segs.V.filter(g => g.a <= bot + ht*0.3 && g.b >= top - ht*0.3 && g.x > x0 - 3 && g.x < x1 + 3);
-    const inner = clusterBy(vs, 'x', 1.5).map(c=>c.v).filter(x => x > x0 + 3 && x < x1 - 3).sort((a,b)=>a-b);
+    let inner = clusterBy(vs, 'x', 1.5).map(c=>c.v).filter(x => x > x0 + 3 && x < x1 - 3).sort((a,b)=>a-b);
+    if (!inner.length){
+      // không có đường dọc: lấy điểm ngắt của đường kẻ ngang (mỗi ô vẽ một đoạn riêng) làm ranh giới cột
+      const ends = c => { const e = []; c.items.forEach(g => { e.push({x:g.a,a:0,b:1}, {x:g.b,a:0,b:1}); }); return clusterBy(e,'x',1.5).map(q=>q.v).filter(x => x > x0 + 3 && x < x1 - 3); };
+      const et = ends(T), eb = ends(B);
+      const both = et.filter(x => eb.some(y => Math.abs(x-y) <= 2));
+      inner = (both.length ? both : (et.length >= eb.length ? et : eb)).sort((a,b)=>a-b);
+    }
     if (!inner.length) continue;
     const xs = [x0, ...inner, x1];
     const cols = []; for (let j=0;j<xs.length-1;j++) cols.push({ a:xs[j], b:xs[j+1] });
@@ -318,13 +327,37 @@ function gridRows(page, rowTol, mrg, colTol){
     const k = bands.findIndex(b => cy <= b.top && cy >= b.bot && cx >= b.x0 - 2 && cx <= b.x1 + 2);
     if (k >= 0) buckets[k].push(it); else outside.push(it);
   }
+  const keyOf = b => b.cols.map(c => Math.round(c.a/4)).join(',') + '|' + Math.round(b.x1/4);
+  const mkRow = (b, its) => {
+    const byCol = b.cols.map(() => []);
+    for (const it of its) byCol[colIndex(b.cols, it)].push(it);
+    const row = byCol.map(cellText);
+    row._nc = b.cols.length; row._k = keyOf(b);
+    return row;
+  };
+  // chữ tràn qua nhiều cột → dải này không phải dòng bảng thật (đoạn văn, ô gộp)
+  const crosses = (b, it) => { const c = b.cols[colIndex(b.cols, it)]; return it.x0 < c.a - 3 || it.x1 > c.b + 3; };
   bands.forEach((b, k) => {
     if (!buckets[k].length) return;
-    const byCol = b.cols.map(() => []);
-    for (const it of buckets[k]) byCol[colIndex(b.cols, it)].push(it);
-    const row = byCol.map(cellText);
+    if (buckets[k].filter(it => crosses(b, it)).length > buckets[k].length * 0.25){ outside.push(...buckets[k]); return; }
+    const row = mkRow(b, buckets[k]);
     if (row.some(Boolean)) out.push({ y: b.top, row });
   });
+  // dòng bị cắt ở mép trang (thiếu đường kẻ trên/dưới): mượn cột của dải gần nhất, chỉ nhận nếu trông như dòng dữ liệu
+  const wide = bands.filter(b => b.cols.length >= 3);
+  if (wide.length && outside.length){
+    const first = wide.reduce((p,q)=>q.top>p.top?q:p), last = wide.reduce((p,q)=>q.bot<p.bot?q:p);
+    const tryVirtual = (b, top, bot) => {
+      const its = outside.filter(it => { const cy = it.y + it.h*0.35, cx = (it.x0+it.x1)/2; return cy <= top && cy >= bot && cx >= b.x0 - 2 && cx <= b.x1 + 2 && !crosses(b, it); });
+      if (!its.length) return;
+      const row = mkRow(b, its);
+      if (row.filter(v => v && typeOf(v)).length < 2) return;
+      out.push({ y: top, row });
+      for (const it of its) outside.splice(outside.indexOf(it), 1);
+    };
+    tryVirtual(first, first.top + (first.top - first.bot), first.top);
+    tryVirtual(last, last.bot, last.bot - (last.top - last.bot));
+  }
   if (outside.length){
     const ls = linesOf({ items: outside, w: page.w }, rowTol, mrg);
     if (ls.length){
@@ -498,6 +531,15 @@ function joinPageBreaks(pageRows){
   }
   return pageRows;
 }
+// chỉ giữ bảng chính (bảng kẻ khung có nhiều dòng nhất), bỏ khung thông tin phía trên
+function mainOnly(pageRows){
+  if (!$('mainOnly').checked) return pageRows;
+  const cnt = {};
+  pageRows.forEach(rows => rows.forEach(r => { if (r._k) cnt[r._k] = (cnt[r._k]||0) + 1; }));
+  const keys = Object.keys(cnt); if (!keys.length) return pageRows;
+  const main = keys.sort((a,b)=>cnt[b]-cnt[a])[0];
+  return pageRows.map(rows => rows.filter(r => r._k === main));
+}
 // bỏ tiêu đề lặp lại ở các trang sau + dòng số trang
 function stripRepeats(pageRows){
   if (!$('dropHead').checked) return pageRows;
@@ -580,13 +622,13 @@ function build(){
     const W = Math.max(...used.map(p=>p.w), 1);
     const cols = plain.length ? columnsOf(plain, W, colTol) : null;
     let rows = [];
-    joinPageBreaks(stripRepeats(idx.map(i => rowsOf(S.pages[i], i, cols)))).forEach(r => rows.push(...r));
+    joinPageBreaks(stripRepeats(mainOnly(idx.map(i => rowsOf(S.pages[i], i, cols))))).forEach(r => rows.push(...r));
     S.sheets.push({ name:'PDF', rows: cleanup(rows), pages: used.map(p=>p.num) });
   } else {
     S.pages.forEach((p,i) => {
       if (!p.use) return;
       const cols = all[i] ? columnsOf([all[i]], p.w, colTol) : null;
-      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(stripRepeats([rowsOf(p, i, cols)])[0]), pages:[p.num] });
+      S.sheets.push({ name:'Trang ' + p.num, rows: cleanup(stripRepeats(mainOnly([rowsOf(p, i, cols)]))[0]), pages:[p.num] });
     });
   }
   const nGrid = used.filter(isGrid).length;
@@ -653,7 +695,7 @@ $('grid').addEventListener('focusout', ev => {
   td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
 });
 
-['mode','numfmt','dropEmpty','mergeRec','dropHead','useGrid'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['mode','numfmt','dropEmpty','mergeRec','dropHead','useGrid','mainOnly'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
 ['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
 
 // ---------- export ----------
@@ -684,10 +726,58 @@ function makeWB(){
   return wb;
 }
 
+// xuất Excel có định dạng (ExcelJS); nếu không tải được thư viện thì xuất bản thường
+async function styledXlsx(){
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'pdftoexcel';
+  const names = new Set();
+  const FONT = { name:'Arial', size:10 };
+  const thin = c => ({ style:'thin', color:{ argb:c } });
+  for (const sh of S.sheets){
+    let nm = sh.name.slice(0,31), k=2; while (names.has(nm)) nm = sh.name.slice(0,27)+' ('+(k++)+')'; names.add(nm);
+    const rows = sh.rows, nc = Math.max(1, ...rows.map(r=>r.length));
+    let nHead = rows.findIndex(r => r.filter(v => v && typeOf(v)).length >= 2);
+    if (nHead < 0 || nHead > 6) nHead = 0;
+    const ws = wb.addWorksheet(nm, { views:[{ state:'frozen', ySplit:nHead, showGridLines:false }] });
+    ws.pageSetup = { orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{left:0.4,right:0.4,top:0.5,bottom:0.5,header:0.3,footer:0.3} };
+    const width = new Array(nc).fill(8), isNumCol = new Array(nc).fill(0), isTxtCol = new Array(nc).fill(0);
+    rows.forEach((r, i) => {
+      const xr = ws.getRow(i+1);
+      for (let j=0;j<nc;j++){
+        const v = r[j] ?? '', c = xr.getCell(j+1);
+        const head = i < nHead;
+        c.font = head ? { ...FONT, bold:true, color:{ argb:'FFFFFFFF' } } : FONT;
+        c.border = head ? { top:thin('FF5B7DB1'), left:thin('FF5B7DB1'), bottom:thin('FF5B7DB1'), right:thin('FF5B7DB1') }
+                        : { top:thin('FFD0D7E2'), left:thin('FFD0D7E2'), bottom:thin('FFD0D7E2'), right:thin('FFD0D7E2') };
+        if (head){
+          c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF1F3864' } };
+          c.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+          if (v) c.value = String(v);
+          continue;
+        }
+        if (v === '') continue;
+        const ty = typeOf(v);
+        if (ty && ty.t === 'd'){ c.value = ty.v; c.numFmt = 'dd/mm/yyyy'; c.alignment = { horizontal:'center', vertical:'top' }; width[j] = Math.max(width[j], 11); }
+        else if (ty){ c.value = ty.v; c.numFmt = ty.dec ? '#,##0.00;(#,##0.00);"-"' : '#,##0;(#,##0);"-"'; c.alignment = { vertical:'top' }; isNumCol[j]++; width[j] = Math.max(width[j], String(v).length + 3); }
+        else { c.value = String(v); c.alignment = { vertical:'top', wrapText:true }; isTxtCol[j]++; width[j] = Math.max(width[j], Math.min(String(v).length + 2, 48)); }
+      }
+    });
+    for (let j=0;j<nc;j++){ ws.getColumn(j+1).width = Math.min(Math.max(width[j], 9), 50); }
+    for (let i=0;i<nHead;i++) ws.getRow(i+1).height = 30;
+    if (nHead && rows.length > nHead) ws.autoFilter = { from:{ row:nHead, column:1 }, to:{ row:nHead, column:nc } };
+    // dòng xen kẽ màu nhạt cho dễ dò
+    for (let i=nHead;i<rows.length;i++) if ((i - nHead) % 2 === 1)
+      for (let j=1;j<=nc;j++) ws.getRow(i+1).getCell(j).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF3F6FB' } };
+  }
+  return await wb.xlsx.writeBuffer();
+}
+
 $('dlBtn').addEventListener('click', async () => {
-  if (!window.XLSX){ toast('Chưa tải được thư viện Excel'); return; }
+  if (!window.ExcelJS && !window.XLSX){ toast('Chưa tải được thư viện Excel'); return; }
   const fn = (S.name || 'pdf') + '.xlsx';
-  const buf = XLSX.write(makeWB(), { type:'array', bookType:'xlsx' });
+  let buf;
+  try { buf = window.ExcelJS ? await styledXlsx() : null; } catch(e){ console.log('[pdftoexcel] ExcelJS lỗi', e); buf = null; }
+  if (!buf) buf = XLSX.write(makeWB(), { type:'array', bookType:'xlsx' });
   const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   if (S.downloads){
     try { await S.downloads.save({ filename: fn, data: blob }); toast('Đã lưu ' + fn); return; }
