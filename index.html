@@ -63,6 +63,7 @@ td.num{text-align:right;font-family:var(--mono);color:#e8eef8}
 td.neg{color:#ff9a9a}
 td.dt{font-family:var(--mono);color:#ffe2a8}
 tr:hover td{background:#111}
+tr.bold td{font-weight:700;background:#0b1a3a}
 .hint{margin-top:10px;font-size:12px;color:var(--tx3)}
 .hint kbd{font-family:var(--mono);background:var(--s2);border:1px solid var(--line2);border-radius:4px;padding:0 5px;font-size:11px}
 .legend{display:flex;gap:14px;margin-left:auto;font-size:11.5px;color:var(--tx3)}
@@ -84,7 +85,7 @@ tr:hover td{background:#111}
   <label class="drop" id="drop">
     <input type="file" id="file" accept="application/pdf,.pdf">
     <b>Kéo thả file PDF vào đây</b>
-    <small>hoặc bấm để chọn file · PDF có lớp chữ (xuất từ phần mềm), không áp dụng cho bản scan ảnh</small>
+    <small>hoặc bấm để chọn file · PDF không có lớp chữ (scan, in ra PDF) sẽ tự nhận dạng chữ OCR — chậm hơn, nên soát lại số liệu</small>
   </label>
 
   <div class="pwd" id="pwd">
@@ -124,6 +125,7 @@ tr:hover td{background:#111}
       <label>Độ lệch dòng <span class="rv" id="rowV"></span></label>
       <input type="range" id="rowTol" min="2" max="12" value="5">
     </div>
+    <label class="chk" title="Sổ phụ ngân hàng (Withdrawal/Deposit/Balance/Remarks): xuất theo mẫu STT, Ngày, Nội dung, Rút, Gửi, Số dư, kèm dòng đầu kỳ, cộng phát sinh, cuối kỳ"><input type="checkbox" id="bankFmt" checked> Chuẩn hoá sổ phụ</label>
     <label class="chk" title="Chỉ lấy bảng chi tiết giao dịch, bỏ các khung thông tin phía trên"><input type="checkbox" id="mainOnly" checked> Chỉ lấy bảng chính</label>
     <label class="chk" title="PDF có kẻ khung bảng: chia dòng/cột đúng theo đường kẻ (chính xác nhất)"><input type="checkbox" id="useGrid" checked> Theo đường kẻ bảng</label>
     <label class="chk" title="Gộp các dòng chữ bị xuống dòng (diễn giải, loại GD) vào dòng có số tiền"><input type="checkbox" id="mergeRec" checked> Gộp giao dịch nhiều dòng</label>
@@ -182,7 +184,7 @@ async function openPdf(password){
     const task = pdfjsLib.getDocument({ data: S.pdfData.slice(0), password, isEvalSupported:false, disableFontFace:true });
     const pdf = await task.promise;
     $('pwd').classList.remove('show');
-    S.pages = [];
+    S.pages = []; S.ocrFail = false; S.ocrUsed = 0;
     for (let i=1;i<=pdf.numPages;i++){
       info(`Đang đọc <span class="file">${esc(S.name)}.pdf</span> — trang ${i}/${pdf.numPages}…`);
       const pg = await pdf.getPage(i);
@@ -196,15 +198,24 @@ async function openPdf(password){
         const x = e - vp.viewBox[0], y = f - vp.viewBox[1];
         items.push({ s: it.str, x0: x, x1: x + (it.width || it.str.length*h*0.5), y, h });
       }
+      if (items.length < 3){
+        // PDF không có lớp chữ (scan, hoặc chữ bị in thành hình vẽ) → nhận dạng chữ OCR
+        try { items.push(...await ocrPage(pg, vp, i, pdf.numPages)); }
+        catch(e){ console.log('[pdftoexcel] OCR lỗi', e); S.ocrFail = true; }
+      }
       let segs = null;
       try { segs = await getSegs(pg, vp); } catch(e){ segs = null; }
       const page = { num:i, w: vp.width, items, use:true };
       page.grid = segs ? analyzeGrid(segs, page) : null;
       S.pages.push(page);
     }
+    if (S.ocrWorker){ try { await S.ocrWorker.terminate(); } catch(e){} S.ocrWorker = null;
+    }
     const total = S.pages.reduce((a,p)=>a+p.items.length,0);
     if (!total){
-      info(`<span class="e">File <span class="file">${esc(S.name)}.pdf</span> không có lớp chữ (PDF scan dạng ảnh).</span> Tool này không nhận dạng chữ trên ảnh — cần OCR trước.`);
+      info(S.ocrFail
+        ? `<span class="e">File <span class="file">${esc(S.name)}.pdf</span> không có lớp chữ và không chạy được nhận dạng chữ (OCR) ở đây.</span> Hãy mở tool bằng link GitHub (tlnphuong-96.github.io/pdftoexcel) để dùng OCR.`
+        : `<span class="e">File <span class="file">${esc(S.name)}.pdf</span> không có lớp chữ và OCR không đọc được chữ nào.</span>`);
       $('bar').classList.remove('show'); $('grid').style.display='none'; $('tabs').innerHTML=''; $('hint').style.display='none';
       return;
     }
@@ -219,6 +230,39 @@ async function openPdf(password){
     }
     info(`<span class="e">Không đọc được file: ${esc(err && err.message || err)}</span>`);
   }
+}
+
+// ---------- OCR (Tesseract.js, chỉ tải khi cần) ----------
+function loadScript(src){ return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); }); }
+function ocrClean(t){
+  t = t.replace(/[—–]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
+  if (/[A-Z]{2}/.test(t) && !/[a-km-z]/.test(t)) t = t.replace(/l/g, 'I');     // chữ in hoa: l → I
+  return t;
+}
+async function ocrPage(pg, vp, i, n){
+  info(`Trang ${i}/${n} không có lớp chữ — đang nhận dạng chữ (OCR)…`);
+  if (!window.Tesseract) await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
+  if (!S.ocrWorker){
+    S.ocrWorker = await Tesseract.createWorker('eng', 1, {
+      logger: m => { if (m.status === 'recognizing text') info(`Trang ${i}/${n}: đang nhận dạng chữ (OCR) ${Math.round((m.progress||0)*100)}%…`); }
+    });
+    await S.ocrWorker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1' });
+  }
+  const vs = pg.getViewport({ scale: 4 });
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(vs.width); cv.height = Math.ceil(vs.height);
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+  await pg.render({ canvasContext: ctx, viewport: vs }).promise;
+  const { data } = await S.ocrWorker.recognize(cv);
+  const out = [];
+  for (const w of (data.words || [])){
+    const t = (w.text || '').trim(); if (!t) continue;
+    const [X0, Y0] = vs.convertToPdfPoint(w.bbox.x0, w.bbox.y1), [X1, Y1] = vs.convertToPdfPoint(w.bbox.x1, w.bbox.y0);
+    const x0 = Math.min(X0,X1) - vp.viewBox[0], x1 = Math.max(X0,X1) - vp.viewBox[0];
+    const yb = Math.min(Y0,Y1) - vp.viewBox[1], h = Math.abs(Y1-Y0);
+    out.push({ s: ocrClean(t), x0, x1, y: yb + h*0.15, h, ocr: true });
+  }
+  S.ocrUsed++;
+  return out;
 }
 
 // ---------- đường kẻ bảng (nếu PDF có) ----------
@@ -306,17 +350,55 @@ function analyzeGrid(segs, page){
   }
   return bands.length ? { bands } : null;
 }
-function cellText(arr){
-  arr.sort((p,q) => (q.y - p.y) || (p.x0 - q.x0));
-  let txt = '', prev = null;
-  for (const it of arr){
-    const s = it.s.replace(/\s+/g,' ').trim(); if (!s) continue;
-    if (prev && Math.abs(prev.y - it.y) <= Math.max(prev.h, it.h) * 0.5){
-      const cw = Math.max(1, (it.x1-it.x0)/Math.max(1,it.s.length));
-      txt += (it.x0 - prev.x1 > cw*0.15 ? ' ' : '') + s;
-    } else txt = joinTxt(txt, s);
-    prev = it;
+// nối 2 dòng chữ OCR trong cùng ô: ngân hàng ngắt dòng giữa từ nên đoán có cần dấu cách không
+function ocrJoin(a, b){
+  if (!a) return b; if (!b) return a;
+  if (/[a-z]$/.test(a) && /^[a-z]/.test(b)) return a + b;                         // Depos|it, Hochi|min
+  if (/(^|\s)0$/.test(a) && /^[a-z]/.test(b)) return a.slice(0,-1) + 'o' + b;     // OCR đọc o thành 0
+  const l = a.match(/([A-Za-z]+)$/), f = b.match(/^([A-Za-z]+)/);
+  if (l && f){
+    const L = l[1].toUpperCase(), F = f[1].toUpperCase(), C = S.corpus || new Map(), n = w => C.get(w) || 0;
+    if (n(L+F) >= 1 && n(L+F) >= n(L) && n(L+F) >= n(F)) return a + b;                         // VI|ETNAM, VIET|NAM
+    // một chữ cái lẻ ở đầu dòng sau: ghép nếu thành âm tiết hợp lệ (PHU|C, KON|G, LA|O)
+    if (F.length === 1 && L.length >= 2 && /^[A-Z]+$/.test(L) &&
+        ((/[AEIOUY]$/.test(L) && /[CMNPTIOUY]/.test(F)) || (/N$/.test(L) && /[GH]/.test(F)) || (/C$/.test(L) && F === 'H'))) return a + b;
   }
+  return joinTxt(a, b);
+}
+function cellText(arr, col){
+  const its = arr.filter(it => it.s && it.s.trim());
+  if (!its.length) return '';
+  const yc = it => it.y + it.h*0.5;
+  its.sort((p,q) => yc(q) - yc(p));
+  const lines = [];
+  for (const it of its){
+    const L = lines[lines.length-1];
+    if (L && Math.abs(L.yc - yc(it)) <= Math.max(L.h, it.h) * 0.5){ L.its.push(it); L.h = Math.max(L.h, it.h); }
+    else lines.push({ yc: yc(it), h: it.h, its:[it] });
+  }
+  const parts = lines.map(L => {
+    L.its.sort((p,q) => p.x0 - q.x0);
+    let t = '', prev = null;
+    for (const it of L.its){
+      const s = it.s.replace(/\s+/g,' ').trim();
+      const cw = Math.max(1, (it.x1-it.x0)/Math.max(1,it.s.length));
+      t += prev ? ((it.x0 - prev.x1 > cw*0.15 ? ' ' : '') + s) : s;
+      prev = it;
+    }
+    L.x1 = Math.max(...L.its.map(i=>i.x1));
+    L.cw = L.its.reduce((a,i)=>a + (i.x1-i.x0), 0) / Math.max(1, L.its.reduce((a,i)=>a + i.s.length, 0));
+    L.ocr = L.its.some(i => i.ocr);
+    L.t = t;
+    return L;
+  });
+  const maxX1 = Math.max(...parts.map(L=>L.x1));
+  let txt = '';
+  parts.forEach((L, k) => {
+    if (!k){ txt = L.t; return; }
+    const P = parts[k-1];
+    // bản OCR: dòng trước chạy kín tới mép ô → chữ bị ngắt giữa từ, nối liền không dấu cách
+    txt = L.ocr ? ocrJoin(txt, L.t) : joinTxt(txt, L.t);
+  });
   return txt;
 }
 function gridRows(page, rowTol, mrg, colTol){
@@ -327,11 +409,11 @@ function gridRows(page, rowTol, mrg, colTol){
     const k = bands.findIndex(b => cy <= b.top && cy >= b.bot && cx >= b.x0 - 2 && cx <= b.x1 + 2);
     if (k >= 0) buckets[k].push(it); else outside.push(it);
   }
-  const keyOf = b => b.cols.map(c => Math.round(c.a/4)).join(',') + '|' + Math.round(b.x1/4);
+  const keyOf = b => b.cols.slice(1).map(c => c.a);
   const mkRow = (b, its) => {
     const byCol = b.cols.map(() => []);
     for (const it of its) byCol[colIndex(b.cols, it)].push(it);
-    const row = byCol.map(cellText);
+    const row = byCol.map((arr, j) => cellText(arr, b.cols[j]));
     row._nc = b.cols.length; row._k = keyOf(b);
     return row;
   };
@@ -547,11 +629,78 @@ function joinPageBreaks(pageRows){
 function mainOnly(pageRows){
   if (!$('mainOnly').checked) return pageRows;
   const cnt = {};
-  pageRows.forEach(rows => rows.forEach(r => { if (r._k) cnt[r._k] = (cnt[r._k]||0) + 1; }));
-  const keys = Object.keys(cnt); if (!keys.length) return pageRows;
-  const main = keys.sort((a,b)=>cnt[b]-cnt[a])[0];
-  return pageRows.map(rows => rows.filter(r => r._k === main));
+  // gom các dòng có cùng bố cục cột (lệch ≤ 3pt) thành một bảng
+  const groups = [];
+  const same = (a, b) => a.length === b.length && a.every((x,i) => Math.abs(x - b[i]) <= 3);
+  pageRows.forEach(rows => rows.forEach(r => {
+    if (!r._k) return;
+    let g = groups.find(g => same(g.k, r._k));
+    if (!g) groups.push(g = { k:r._k, n:0, rows:new Set() });
+    g.n++; g.rows.add(r);
+  }));
+  if (!groups.length) return pageRows;
+  const main = groups.sort((a,b)=>b.n-a.n)[0];
+  return pageRows.map(rows => rows.filter(r => main.rows.has(r)));
 }
+// ---------- chuẩn hoá sổ phụ ngân hàng (Withdrawal / Deposit / Balance / Remarks, vd KEB Hana) ----------
+const MON = {JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12};
+function normDate(s){
+  s = String(s||'').trim();
+  let m = s.match(/^(\d{1,2})[-\s\/.]([A-Za-z]{3})[-\s\/.](\d{2,4})$/);
+  if (m && MON[m[2].toUpperCase()]){ const y = m[3].length === 2 ? 2000 + +m[3] : +m[3]; return `${m[1].padStart(2,'0')}/${String(MON[m[2].toUpperCase()]).padStart(2,'0')}/${y}`; }
+  const t = typeOf(s);
+  if (t && t.t === 'd'){ const d = new Date(Date.UTC(1899,11,30) + t.v*86400000); return `${String(d.getUTCDate()).padStart(2,'0')}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${d.getUTCFullYear()}`; }
+  return s;
+}
+function numOf(s){ const t = typeOf(String(s||'').replace(/[^\d.,()\-]/g,'')); return t && t.t === 'n' ? t.v : 0; }
+function fmtN(v){
+  const dec = Math.abs(v - Math.round(v)) > 1e-9 ? 2 : 0;
+  let s = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits:dec, maximumFractionDigits:dec });
+  if (S.fmt === 'vn') s = s.replace(/,/g,'#').replace(/\./g,',').replace(/#/g,'.');
+  return (v < 0 ? '-' : '') + s;
+}
+function bankFormat(rows){
+  const hi = rows.findIndex(r => r.some(v => /withdraw/i.test(v)) && r.some(v => /deposit/i.test(v)) && r.some(v => /balance/i.test(v)) && r.some(v => /remark/i.test(v)));
+  if (hi < 0) return null;
+  const H = rows[hi], col = re => H.findIndex(v => re.test(v));
+  const cA = col(/account/i), cD = col(/date/i), cW = col(/withdraw/i), cP = col(/deposit/i), cB = col(/balance/i), cR = col(/remark/i);
+  if (cD < 0) return null;
+  const accts = new Map();
+  for (const r of rows.slice(hi+1)){
+    if (r.every(v => !v) || /withdraw/i.test(r[cW] || '')) continue;
+    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(normDate(r[cD]))) continue;                 // không phải dòng giao dịch
+    const a = cA >= 0 ? String(r[cA]||'').replace(/\s/g,'') : '';
+    if (!accts.has(a)) accts.set(a, { open:null, end:null, tx:[] });
+    const A = accts.get(a), rem = String(r[cR]||'');
+    if (/opening\s*balance/i.test(rem)) A.open = r;
+    else if (/ending\s*balance/i.test(rem)) A.end = r;
+    else A.tx.push(r);
+  }
+  let list = [...accts.entries()].filter(([a,A]) => A.tx.length);
+  if (!list.length) list = [...accts.entries()].sort((p,q) => numOf(q[1].open?.[cB]) - numOf(p[1].open?.[cB])).slice(0,1);
+  const out = [['STT','Ngày','Nội dung (Remarks)','Rút (Withdrawal)','Gửi (Deposit)','Số dư theo NH']];
+  const bold = new Set(); const checks = [];
+  for (const [a, A] of list){
+    if (list.length > 1){ bold.add(out.length); out.push(['', '', 'Tài khoản: ' + a, '', '', '']); }
+    const ob = A.open ? numOf(A.open[cB]) : (A.tx.length ? numOf(A.tx[0][cB]) + numOf(A.tx[0][cW]) - numOf(A.tx[0][cP]) : 0);
+    bold.add(out.length); out.push(['', normDate(A.open ? A.open[cD] : (A.tx[0]||[])[cD]), 'Opening Balance – Số dư đầu kỳ', '', '', fmtN(ob)]);
+    let sw = 0, sd = 0, run = ob; const bad = [];
+    A.tx.forEach((r, k) => {
+      const w = numOf(r[cW]), d = numOf(r[cP]), b = numOf(r[cB]);
+      sw += w; sd += d; run = run - w + d;
+      if (Math.abs(run - b) > 0.005){ bad.push(k+1); run = b; }
+      out.push([String(k+1), normDate(r[cD]), String(r[cR]||''), fmtN(w), fmtN(d), fmtN(b)]);
+    });
+    bold.add(out.length); out.push(['', '', 'Cộng phát sinh', fmtN(sw), fmtN(sd), '']);
+    const eb = A.end ? numOf(A.end[cB]) : run;
+    bold.add(out.length); out.push(['', normDate(A.end ? A.end[cD] : ''), 'Ending Balance – Số dư cuối kỳ', '', '', fmtN(eb)]);
+    const ok = Math.abs(ob - sw + sd - eb) < 0.005;
+    checks.push((list.length > 1 ? a + ': ' : '') + (ok && !bad.length ? '<span class="ok">đầu kỳ − rút + gửi = cuối kỳ ✓</span>'
+      : `<span class="w">lệch số dư${bad.length ? ' ở STT ' + bad.join(', ') : ''} — kiểm tra lại số OCR</span>`));
+  }
+  return { rows: out, bold, check: checks.join(' · ') };
+}
+
 // bỏ tiêu đề lặp lại ở các trang sau + dòng số trang
 function stripRepeats(pageRows){
   if (!$('dropHead').checked) return pageRows;
@@ -622,6 +771,8 @@ function build(){
   const rowTol = +$('rowTol').value/10, mrg = +$('mrg').value/10, colTol = +$('colTol').value;
   $('rowV').textContent = rowTol.toFixed(1); $('mrgV').textContent = mrg.toFixed(1); $('colV').textContent = colTol + '%';
   S.fmt = $('numfmt').value === 'auto' ? detectFmt() : $('numfmt').value;
+  S.corpus = new Map();
+  S.pages.forEach(p => p.items.forEach(it => it.s.toUpperCase().split(/[^A-Z]+/).forEach(w => { if (w.length >= 2) S.corpus.set(w, (S.corpus.get(w)||0) + 1); })));
   const used = S.pages.filter(p=>p.use);
   const useGrid = $('useGrid').checked;
   const isGrid = p => useGrid && p.grid;
@@ -644,10 +795,12 @@ function build(){
     });
   }
   const nGrid = used.filter(isGrid).length;
+  S.check = '';
+  if ($('bankFmt').checked) S.sheets.forEach(sh => { const r = bankFormat(sh.rows); if (r){ sh.rows = r.rows; sh.bold = r.bold; S.check = r.check; } });
   if (S.cur >= S.sheets.length) S.cur = 0;
   const nr = S.sheets.reduce((a,s)=>a+s.rows.length,0);
   const fmtTxt = {vn:'số kiểu VN',us:'số kiểu US',text:'giữ số dạng chữ'}[S.fmt];
-  info(`<span class="file">${esc(S.name)}.pdf</span> · ${S.pages.length} trang · ${used.length} trang được chọn · <span class="ok">${nr} dòng</span> · ${fmtTxt}${$('numfmt').value==='auto'?' (tự nhận)':''}${nGrid ? ` · đọc theo đường kẻ bảng: ${nGrid}/${used.length} trang` : ''}`);
+  info(`<span class="file">${esc(S.name)}.pdf</span> · ${S.pages.length} trang · ${used.length} trang được chọn · <span class="ok">${nr} dòng</span> · ${fmtTxt}${$('numfmt').value==='auto'?' (tự nhận)':''}${nGrid ? ` · đọc theo đường kẻ bảng: ${nGrid}/${used.length} trang` : ''}${S.ocrUsed ? ` · OCR ${S.ocrUsed} trang` : ''}${S.check ? ' · ' + S.check : ''}`);
   renderTabs(); renderGrid();
   $('dlBtn').disabled = !S.sheets.length;
 }
@@ -684,7 +837,7 @@ function renderGrid(){
   for (let j=0;j<nc;j++) h += `<th>${colName(j)}</th>`;
   h += '</tr></thead><tbody>';
   sh.rows.forEach((r,i) => {
-    h += `<tr><th>${i+1}</th>`;
+    h += `<tr${sh.bold && sh.bold.has(i) ? ' class="bold"' : ''}><th>${i+1}</th>`;
     for (let j=0;j<nc;j++){
       const v = r[j] ?? '', ty = typeOf(v);
       const cls = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
@@ -707,7 +860,7 @@ $('grid').addEventListener('focusout', ev => {
   td.className = ty ? (ty.t==='d' ? 'dt' : 'num' + (ty.v<0?' neg':'')) : '';
 });
 
-['mode','numfmt','dropEmpty','mergeRec','dropHead','useGrid','mainOnly'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
+['mode','numfmt','dropEmpty','mergeRec','dropHead','useGrid','mainOnly','bankFmt'].forEach(id => $(id).addEventListener('change', () => { S.cur=0; build(); }));
 ['colTol','mrg','rowTol'].forEach(id => $(id).addEventListener('input', build));
 
 // ---------- export ----------
@@ -767,6 +920,7 @@ async function styledXlsx(){
           if (v) c.value = String(v);
           continue;
         }
+        if (sh.bold && sh.bold.has(i)){ c.font = { ...FONT, bold:true }; c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFE3EAF6' } }; }
         if (v === '') continue;
         const ty = typeOf(v);
         if (ty && ty.t === 'd'){ c.value = ty.v; c.numFmt = 'dd/mm/yyyy'; c.alignment = { horizontal:'center', vertical:'top' }; width[j] = Math.max(width[j], 11); }
@@ -778,7 +932,7 @@ async function styledXlsx(){
     for (let i=0;i<nHead;i++) ws.getRow(i+1).height = 30;
     if (nHead && rows.length > nHead) ws.autoFilter = { from:{ row:nHead, column:1 }, to:{ row:nHead, column:nc } };
     // dòng xen kẽ màu nhạt cho dễ dò
-    for (let i=nHead;i<rows.length;i++) if ((i - nHead) % 2 === 1)
+    for (let i=nHead;i<rows.length;i++) if ((i - nHead) % 2 === 1 && !(sh.bold && sh.bold.has(i)))
       for (let j=1;j<=nc;j++) ws.getRow(i+1).getCell(j).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF3F6FB' } };
   }
   return await wb.xlsx.writeBuffer();
