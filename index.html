@@ -268,44 +268,67 @@ async function ocrPage(pg, vp, i, n){
 // ---------- đường kẻ bảng (nếu PDF có) ----------
 async function getSegs(pg, vp){
   const ol = await pg.getOperatorList();
-  const O = pdfjsLib.OPS, U = pdfjsLib.Util;
+  return segsFromOps(ol, pdfjsLib.OPS, pdfjsLib.Util, vp);
+}
+// chỉ lấy đường thật sự được vẽ (fill/stroke); bỏ vùng cắt (clip) — PDF in từ Outlook/Word có hàng trăm vùng cắt
+function segsFromOps(ol, O, U, vp){
   const ox = vp.viewBox[0], oy = vp.viewBox[1];
   let ctm = [1,0,0,1,0,0]; const st = [];
   const H = [], V = [];
-  const tp = (x,y) => { const p = U.applyTransform([x,y], ctm); return [p[0]-ox, p[1]-oy]; };
+  let pend = [];                                   // đoạn của path đang chờ lệnh vẽ
+  const PAINT = new Set([O.stroke, O.closeStroke, O.fill, O.eoFill, O.fillStroke, O.eoFillStroke, O.closeFillStroke, O.closeEOFillStroke].filter(x => x !== undefined));
+  const tp = (x,y) => [ctm[0]*x + ctm[2]*y + ctm[4] - ox, ctm[1]*x + ctm[3]*y + ctm[5] - oy];
+  const mul = (m, n) => [m[0]*n[0]+m[2]*n[1], m[1]*n[0]+m[3]*n[1], m[0]*n[2]+m[2]*n[3], m[1]*n[2]+m[3]*n[3], m[0]*n[4]+m[2]*n[5]+m[4], m[1]*n[4]+m[3]*n[5]+m[5]];
   const addSeg = (x1,y1,x2,y2) => {
     const [a,b] = tp(x1,y1), [c,d] = tp(x2,y2);
-    if (Math.abs(b-d) < 1.5 && Math.abs(a-c) > 2) H.push({ y:(b+d)/2, a:Math.min(a,c), b:Math.max(a,c) });
-    else if (Math.abs(a-c) < 1.5 && Math.abs(b-d) > 2) V.push({ x:(a+c)/2, a:Math.min(b,d), b:Math.max(b,d) });
+    if (Math.abs(b-d) < 1.5 && Math.abs(a-c) > 2) pend.push(['H', { y:(b+d)/2, a:Math.min(a,c), b:Math.max(a,c) }]);
+    else if (Math.abs(a-c) < 1.5 && Math.abs(b-d) > 2) pend.push(['V', { x:(a+c)/2, a:Math.min(b,d), b:Math.max(b,d) }]);
   };
+  const addRect = (x, y, w, h) => {
+    const [X0,Y0] = tp(x,y), [X1,Y1] = tp(x+w,y+h);
+    const xa = Math.min(X0,X1), xb = Math.max(X0,X1), ya = Math.min(Y0,Y1), yb = Math.max(Y0,Y1);
+    if (yb-ya < 2.5 && xb-xa > 2) pend.push(['H', { y:(ya+yb)/2, a:xa, b:xb }]);
+    else if (xb-xa < 2.5 && yb-ya > 2) pend.push(['V', { x:(xa+xb)/2, a:ya, b:yb }]);
+    else if (xb-xa > 2 && yb-ya > 2){
+      pend.push(['H', { y:ya, a:xa, b:xb }], ['H', { y:yb, a:xa, b:xb }], ['V', { x:xa, a:ya, b:yb }], ['V', { x:xb, a:ya, b:yb }]);
+    }
+  };
+  const commit = () => { for (const [k, g] of pend) (k === 'H' ? H : V).push(g); pend = []; };
   for (let i=0;i<ol.fnArray.length;i++){
     const fn = ol.fnArray[i], a = ol.argsArray[i];
     if (fn === O.save) st.push(ctm.slice());
     else if (fn === O.restore) ctm = st.pop() || ctm;
-    else if (fn === O.transform) ctm = U.transform(ctm, a);
-    else if (fn === O.paintFormXObjectBegin){ st.push(ctm.slice()); if (a && a[0]) ctm = U.transform(ctm, a[0]); }
+    else if (fn === O.transform) ctm = mul(ctm, a);
+    else if (fn === O.paintFormXObjectBegin){ st.push(ctm.slice()); if (a && a[0]) ctm = mul(ctm, a[0]); }
     else if (fn === O.paintFormXObjectEnd) ctm = st.pop() || ctm;
     else if (fn === O.constructPath){
-      const sub = a[0], co = a[1]; let k = 0, cx = 0, cy = 0, sx = 0, sy = 0;
-      for (const op of sub){
-        if (op === O.rectangle){
-          const x = co[k++], y = co[k++], w = co[k++], h = co[k++];
-          const [X0,Y0] = tp(x,y), [X1,Y1] = tp(x+w,y+h);
-          const xa = Math.min(X0,X1), xb = Math.max(X0,X1), ya = Math.min(Y0,Y1), yb = Math.max(Y0,Y1);
-          if (yb-ya < 2.5 && xb-xa > 2) H.push({ y:(ya+yb)/2, a:xa, b:xb });
-          else if (xb-xa < 2.5 && yb-ya > 2) V.push({ x:(xa+xb)/2, a:ya, b:yb });
-          else if (xb-xa > 2 && yb-ya > 2){
-            H.push({ y:ya, a:xa, b:xb }, { y:yb, a:xa, b:xb });
-            V.push({ x:xa, a:ya, b:yb }, { x:xb, a:ya, b:yb });
-          }
-          cx = x; cy = y; sx = x; sy = y;
-        } else if (op === O.moveTo){ cx = co[k++]; cy = co[k++]; sx = cx; sy = cy; }
-        else if (op === O.lineTo){ const nx = co[k++], ny = co[k++]; addSeg(cx,cy,nx,ny); cx = nx; cy = ny; }
-        else if (op === O.curveTo){ k += 4; cx = co[k++]; cy = co[k++]; }
-        else if (op === O.curveTo2 || op === O.curveTo3){ k += 2; cx = co[k++]; cy = co[k++]; }
-        else if (op === O.closePath){ addSeg(cx,cy,sx,sy); cx = sx; cy = sy; }
+      pend = [];
+      if (Array.isArray(a[0])){                    // pdf.js 3.x: [ops[], coords[], minMax]
+        const sub = a[0], co = a[1]; let k = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+        for (const op of sub){
+          if (op === O.rectangle){ const x = co[k++], y = co[k++], w = co[k++], h = co[k++]; addRect(x,y,w,h); cx = sx = x; cy = sy = y; }
+          else if (op === O.moveTo){ cx = co[k++]; cy = co[k++]; sx = cx; sy = cy; }
+          else if (op === O.lineTo){ const nx = co[k++], ny = co[k++]; addSeg(cx,cy,nx,ny); cx = nx; cy = ny; }
+          else if (op === O.curveTo){ k += 4; cx = co[k++]; cy = co[k++]; }
+          else if (op === O.curveTo2 || op === O.curveTo3){ k += 2; cx = co[k++]; cy = co[k++]; }
+          else if (op === O.closePath){ addSeg(cx,cy,sx,sy); cx = sx; cy = sy; }
+        }
+      } else {                                     // pdf.js mới: [lệnh vẽ, [Float32Array], minMax]
+        const d = (a[1] && a[1][0]) || []; let k = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+        while (k < d.length){
+          const op = d[k++];
+          if (op === 0){ cx = d[k++]; cy = d[k++]; sx = cx; sy = cy; }
+          else if (op === 1){ const nx = d[k++], ny = d[k++]; addSeg(cx,cy,nx,ny); cx = nx; cy = ny; }
+          else if (op === 2){ k += 4; cx = d[k++]; cy = d[k++]; }
+          else if (op === 3){ k += 2; cx = d[k++]; cy = d[k++]; }
+          else if (op === 4){ addSeg(cx,cy,sx,sy); cx = sx; cy = sy; }
+          else break;
+        }
+        if (PAINT.has(a[0])) commit(); else pend = [];
       }
     }
+    else if (PAINT.has(fn)) commit();
+    else if (fn === O.endPath) pend = [];
   }
   return { H, V };
 }
@@ -348,7 +371,7 @@ function analyzeGrid(segs, page){
     const cols = []; for (let j=0;j<xs.length-1;j++) cols.push({ a:xs[j], b:xs[j+1] });
     bands.push({ top, bot, x0, x1, cols });
   }
-  return bands.length ? { bands } : null;
+  return bands.length ? { bands, hc } : null;
 }
 // nối 2 dòng chữ OCR trong cùng ô: ngân hàng ngắt dòng giữa từ nên đoán có cần dấu cách không
 function ocrJoin(a, b){
@@ -414,7 +437,7 @@ function gridRows(page, rowTol, mrg, colTol){
     const byCol = b.cols.map(() => []);
     for (const it of its) byCol[colIndex(b.cols, it)].push(it);
     const row = byCol.map((arr, j) => cellText(arr, b.cols[j]));
-    row._nc = b.cols.length; row._k = keyOf(b);
+    row._nc = b.cols.length; row._k = keyOf(b); row._b = b; row._its = its; row._page = page;
     return row;
   };
   // chữ chạy liền qua ranh giới cột (đoạn văn bị cắt ngang cột) → không phải dòng bảng
@@ -625,6 +648,24 @@ function joinPageBreaks(pageRows){
   }
   return pageRows;
 }
+// tiêu đề bảng nằm trong khung riêng phía trên (ô gộp, đường kẻ khác): lấy chữ trong các vùng giữa các đường kẻ ngang chạy hết bề rộng bảng
+function headerAbove(P, B){
+  if (!P.grid || !P.grid.hc) return [];
+  const ys = P.grid.hc.filter(c => c.a <= B.x0 + 4 && c.b >= B.x1 - 4 && c.v > B.top + 0.5).map(c => c.v).sort((a,b)=>a-b);
+  let prev = B.top; const its = [];
+  for (const y of ys){
+    if (y - B.top > 140) break;
+    if (y - prev < 6){ prev = y; continue; }
+    const reg = P.items.filter(it => { const cy = it.y + it.h*0.35, cx = (it.x0+it.x1)/2; return cy > prev && cy < y && cx >= B.x0 - 2 && cx <= B.x1 + 2; });
+    prev = y;
+    if (!reg.length) break;
+    const txt = reg.map(i => i.s).join('').replace(/\s/g,'');
+    const digit = (txt.match(/\d/g) || []).length / Math.max(1, txt.length);
+    if (digit < 0.15) its.push(...reg);          // vùng chữ (tiêu đề cột)
+    else if (its.length) break;                  // vùng có số (vd dòng số thẻ) nằm giữa → bỏ qua
+  }
+  return its;
+}
 // chỉ giữ bảng chính (bảng kẻ khung có nhiều dòng nhất), bỏ khung thông tin phía trên
 function mainOnly(pageRows){
   if (!$('mainOnly').checked) return pageRows;
@@ -640,7 +681,28 @@ function mainOnly(pageRows){
   }));
   if (!groups.length) return pageRows;
   const main = groups.sort((a,b)=>b.n-a.n)[0];
-  return pageRows.map(rows => rows.filter(r => main.rows.has(r)));
+  const typed = r => r.filter(v => v && typeOf(v)).length;
+  return pageRows.map(rows => {
+    const out = rows.filter(r => main.rows.has(r));
+    // bảng chính không có dòng tiêu đề (tiêu đề kẻ khung kiểu khác): lấy các dải tiêu đề sát phía trên, xếp lại theo cột của bảng
+    const fi = rows.findIndex(r => main.rows.has(r));
+    if (fi > 0 && typed(rows[fi]) >= 2 && rows[fi]._b){
+      const B = rows[fi]._b, its = [];
+      let k = fi - 1, below = B;
+      while (k >= 0 && fi - k <= 4){
+        const r = rows[k]; if (!r._b || typed(r) >= 2) break;
+        if (Math.abs(r._b.bot - below.top) > 2.5 || Math.abs(r._b.x0 - B.x0) > 4 || Math.abs(r._b.x1 - B.x1) > 4) break;
+        its.push(...r._its); below = r._b; k--;
+      }
+      if (!its.length && rows[fi]._page) its.push(...headerAbove(rows[fi]._page, B));
+      if (its.length){
+        const byCol = B.cols.map(() => []);
+        for (const it of its) byCol[colIndex(B.cols, it)].push(it);
+        out.unshift(byCol.map((a, j) => cellText(a, B.cols[j])));
+      }
+    }
+    return out;
+  });
 }
 // ---------- chuẩn hoá sổ phụ ngân hàng (Withdrawal / Deposit / Balance / Remarks, vd KEB Hana) ----------
 const MON = {JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12};
